@@ -1,0 +1,126 @@
+{
+  "name": "@onmyworkbuddy/desktop",
+  "version": "0.3.0",
+  "description": "A local-first macOS desktop agent with auditable tools, approvals, memory and automation.",
+  "author": "On My WorkBuddy",
+  "license": "MIT",
+  "private": true,
+  "workbuddyUpdateFeed": "",
+  "main": "./dist/main/index.cjs",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.web.json --noEmit",
+    "test": "vitest run",
+    "test:online:kimi": "node scripts/kimi-online-smoke.mjs",
+    "test:online:kimi:app": "electron-rebuild -v 43.1.0 -a $(node -p process.arch) -m . -o better-sqlite3 --force && pnpm build && node scripts/kimi-online-smoke.mjs --app",
+    "pretest:e2e": "electron-rebuild -v 43.1.0 -a $(node -p process.arch) -m . -o better-sqlite3 --force",
+    "test:e2e": "playwright test --config playwright.config.ts",
+    "rebuild:electron:x64": "electron-rebuild -v 43.1.0 -a x64 -m . -o better-sqlite3 --force",
+    "rebuild:electron:arm64": "electron-rebuild -v 43.1.0 -a arm64 -m . -o better-sqlite3 --force",
+    "package:mac": "pnpm rebuild:electron:x64 && pnpm build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --config.npmRebuild=false --mac dir dmg zip --x64",
+    "package:mac:signed:x64": "pnpm rebuild:electron:x64 && pnpm build && electron-builder --config.npmRebuild=false --mac dir dmg zip --x64",
+    "package:mac:signed:arm64": "pnpm rebuild:electron:arm64 && pnpm build && electron-builder --config.npmRebuild=false --mac dir dmg zip --arm64",
+    "package:mac:signed:universal": "pnpm build && electron-builder --mac dir dmg zip --universal"
+  },
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "0.80.6",
+    "@earendil-works/pi-ai": "0.80.6",
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "@onmyworkbuddy/contracts": "workspace:*",
+    "@onmyworkbuddy/core": "workspace:*",
+    "@phosphor-icons/react": "2.1.10",
+    "better-sqlite3": "12.11.1",
+    "croner": "9.1.0",
+    "fast-diff": "1.3.0",
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
+    "react-markdown": "10.1.0",
+    "remark-gfm": "4.0.1",
+    "zod": "4.1.13",
+    "zustand": "5.0.8"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "4.2.0",
+    "@playwright/test": "1.61.0",
+    "@types/better-sqlite3": "7.6.13",
+    "@types/react": "19.2.7",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "5.1.1",
+    "electron": "43.1.0",
+    "electron-builder": "26.15.3",
+    "electron-vite": "5.0.0",
+    "vite": "7.2.7"
+  },
+  "build": {
+    "appId": "com.onmyworkbuddy.desktop",
+    "productName": "On My WorkBuddy",
+    "asar": true,
+    "asarUnpack": [
+      "**/*.node"
+    ],
+    "directories": {
+      "output": "../../outputs/release"
+    },
+    "files": [
+      "dist/**/*",
+      "package.json"
+    ],
+    "protocols": [
+      {
+        "name": "On My WorkBuddy MCP OAuth",
+        "schemes": [
+          "onmyworkbuddy"
+        ]
+      }
+    ],
+    "extraResources": [
+      {
+        "from": "../native-host/target/release/on-my-workbuddy-native-host",
+        "to": "NativeHost/on-my-workbuddy-native-host"
+      },
+      {
+        "from": "../native-host/native-messaging-host",
+        "to": "NativeHost/manifests"
+      },
+      {
+        "from": "../native-host/scripts",
+        "to": "NativeHost/scripts"
+      },
+      {
+        "from": "../chrome-extension/manifest.json",
+        "to": "ChromeBridge/manifest.json"
+      },
+      {
+        "from": "../chrome-extension/dist",
+        "to": "ChromeBridge/dist"
+      },
+      {
+        "from": "../../THIRD_PARTY_NOTICES.md",
+        "to": "THIRD_PARTY_NOTICES.md"
+      },
+      {
+        "from": "../../LICENSE",
+        "to": "LICENSE"
+      },
+      {
+        "from": "../../PRIVACY.md",
+        "to": "PRIVACY.md"
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "icon": "build/icon.png",
+      "target": [
+        "dir",
+        "dmg",
+        "zip"
+      ],
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false
+    },
+    "dmg": {
+      "title": "On My WorkBuddy ${version}"
+    }
+  }
+}

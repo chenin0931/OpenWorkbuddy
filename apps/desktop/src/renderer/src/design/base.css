@@ -1,0 +1,108 @@
+* { box-sizing: border-box; }
+html, body, #root { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+body { color: var(--text); background: var(--canvas); font-size: 13px; line-height: 1.54; -webkit-font-smoothing: antialiased; }
+button, input, textarea, select { color: inherit; font: inherit; }
+button { border: 0; cursor: pointer; }
+button:disabled { cursor: default; opacity: .46; }
+input, textarea, select { outline: none; }
+textarea { resize: vertical; }
+svg { flex: 0 0 auto; }
+a { color: var(--link); }
+::selection { color: var(--text); background: var(--accent-soft); }
+
+.titlebar-drag { -webkit-app-region: drag; }
+.no-drag, button, input, textarea, select, a, summary { -webkit-app-region: no-drag; }
+.mono { font-family: var(--font-mono) !important; }
+
+:where(button, a, input, textarea, select, [tabindex]):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.icon-button {
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  color: var(--text-secondary);
+  background: transparent;
+  border-radius: var(--radius-control);
+  transition: color var(--motion-fast) ease, background var(--motion-fast) ease;
+}
+.icon-button:hover { color: var(--text); background: var(--surface-hover); }
+.icon-button.is-active { color: var(--accent); background: var(--accent-soft); }
+.icon-button.is-spinning svg { animation: spin .8s linear infinite; }
+
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 34px;
+  gap: var(--space-2);
+  padding: 0 13px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
+  font-size: 13px;
+  font-weight: 600;
+  transition: background var(--motion-fast) ease, border-color var(--motion-fast) ease, color var(--motion-fast) ease;
+}
+.button.primary { color: #fff; background: var(--accent); }
+.button.primary:hover { background: var(--accent-hover); }
+.button.secondary { color: var(--text); background: var(--surface); border-color: var(--separator-strong); }
+.button.secondary:hover { background: var(--surface-subtle); }
+.button.ghost { color: var(--text-secondary); background: transparent; }
+.button.ghost:hover { color: var(--text); background: var(--surface-hover); }
+.button.small { min-height: 28px; padding-inline: 10px; font-size: 12px; }
+.danger-text { color: var(--danger) !important; }
+
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  gap: 6px;
+  padding: 3px 8px;
+  color: var(--text-secondary);
+  background: var(--surface-muted);
+  border-radius: var(--radius-floating);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.status-badge.compact { width: 8px; height: 8px; padding: 0; background: transparent; }
+.status-dot, .tool-status-dot { width: 7px; height: 7px; flex: 0 0 auto; border-radius: var(--radius-floating); background: var(--text-tertiary); }
+.status-running .status-dot, .status-planning .status-dot, .status-understanding .status-dot, .status-verifying .status-dot { background: var(--accent); }
+.status-waiting_approval .status-dot, .status-waiting_user .status-dot { background: var(--warning); }
+.status-failed .status-dot { background: var(--danger); }
+.tool-status-succeeded .tool-status-dot, .step-completed .tool-status-dot { background: var(--success); }
+.tool-status-failed .tool-status-dot, .tool-status-cancelled .tool-status-dot, .step-failed .tool-status-dot { background: var(--danger); }
+.tool-status-running .tool-status-dot, .tool-status-waiting_approval .tool-status-dot, .step-in_progress .tool-status-dot { background: var(--warning); }
+
+.inline-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 11px 12px;
+  color: var(--text-secondary);
+  background: var(--surface-subtle);
+  border: 1px solid var(--separator);
+  border-radius: var(--radius-surface);
+  font-size: 12px;
+}
+.inline-notice.warning { color: var(--warning); background: var(--warning-soft); }
+.inline-notice.error { color: var(--danger); background: var(--danger-soft); }
+.inline-notice > span { flex: 1; }
+.inline-notice button { padding: 0; color: currentColor; background: transparent; font-weight: 600; }
+
+.spinner { display: inline-block; border: 2px solid color-mix(in srgb, currentColor 20%, transparent); border-top-color: currentColor; border-radius: var(--radius-floating); animation: spin .75s linear infinite; }
+.toggle { position: relative; width: 34px; height: 20px; padding: 2px; background: var(--surface-muted); border: 1px solid var(--separator); border-radius: var(--radius-floating); }
+.toggle span { display: block; width: 14px; height: 14px; background: var(--surface); border-radius: var(--radius-floating); transition: transform var(--motion-base) var(--ease-out); }
+.toggle.is-on { background: var(--accent); border-color: var(--accent); }
+.toggle.is-on span { transform: translateX(14px); }
+
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes toastIn { from { opacity: 0; transform: translateY(-6px); } }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+}

@@ -1,0 +1,33 @@
+{
+  "name": "on-my-workbuddy",
+  "version": "0.3.0",
+  "license": "MIT",
+  "private": true,
+  "packageManager": "pnpm@10.28.2",
+  "scripts": {
+    "dev": "pnpm --filter @onmyworkbuddy/desktop dev",
+    "build": "pnpm -r build",
+    "build:native": "cargo build --release --manifest-path apps/native-host/Cargo.toml",
+    "build:native:x64": "cargo build --release --target x86_64-apple-darwin --manifest-path apps/native-host/Cargo.toml",
+    "build:native:arm64": "cargo build --release --target aarch64-apple-darwin --manifest-path apps/native-host/Cargo.toml",
+    "build:native:universal": "./scripts/build-native-universal.sh",
+    "package:extension": "pnpm --filter @onmyworkbuddy/chrome-extension build && pnpm --filter @onmyworkbuddy/chrome-extension package:zip",
+    "package:mac": "pnpm build && pnpm build:native && pnpm package:extension && pnpm --filter @onmyworkbuddy/desktop package:mac",
+    "test": "pnpm -r test",
+    "test:online:kimi": "pnpm --filter @onmyworkbuddy/desktop test:online:kimi",
+    "test:online:kimi:app": "pnpm --filter @onmyworkbuddy/desktop test:online:kimi:app",
+    "test:e2e": "pnpm --filter @onmyworkbuddy/desktop test:e2e",
+    "test:unit": "vitest run",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "eslint . --max-warnings=0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.2",
+    "@types/node": "^24.10.1",
+    "eslint": "^9.39.2",
+    "globals": "^16.5.0",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.48.1",
+    "vitest": "^4.0.15"
+  }
+}

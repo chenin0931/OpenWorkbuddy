@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="field" x1="160" y1="120" x2="860" y2="920" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFEFA"/>
+      <stop offset="1" stop-color="#EEEDE7"/>
+    </linearGradient>
+    <linearGradient id="cobalt" x1="220" y1="250" x2="520" y2="760" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#5269D7"/>
+      <stop offset="1" stop-color="#2F45AD"/>
+    </linearGradient>
+    <linearGradient id="graphite" x1="500" y1="250" x2="810" y2="760" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#343943"/>
+      <stop offset="1" stop-color="#171A1F"/>
+    </linearGradient>
+    <filter id="shadow" x="-25%" y="-25%" width="150%" height="170%">
+      <feDropShadow dx="0" dy="24" stdDeviation="22" flood-color="#1B1D22" flood-opacity=".22"/>
+    </filter>
+  </defs>
+  <rect x="64" y="64" width="896" height="896" rx="218" fill="url(#field)"/>
+  <g filter="url(#shadow)">
+    <path d="M244 300 366 716 512 470" fill="none" stroke="url(#cobalt)" stroke-width="112" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="m512 470 146 246 122-416" fill="none" stroke="url(#graphite)" stroke-width="112" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M252 292 368 680" fill="none" stroke="#FFFFFF" stroke-width="13" stroke-linecap="round" opacity=".18"/>
+    <path d="m521 470 136 222" fill="none" stroke="#FFFFFF" stroke-width="11" stroke-linecap="round" opacity=".10"/>
+  </g>
+  <circle cx="512" cy="470" r="25" fill="#A76513"/>
+  <circle cx="512" cy="470" r="25" fill="none" stroke="#FFF7E8" stroke-width="7" opacity=".88"/>
+</svg>

@@ -1,0 +1,9 @@
+{
+  "name": "com.onmyworkbuddy.chrome",
+  "description": "On My WorkBuddy local Chrome bridge",
+  "path": "__HOST_BINARY__",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://__EXTENSION_ID__/"
+  ]
+}

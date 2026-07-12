@@ -1,0 +1,13 @@
+{
+  "name": "@onmyworkbuddy/chrome-extension",
+  "version": "0.3.0",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "package:zip": "rm -rf release && mkdir -p release/extension ../../outputs && cp manifest.json release/extension/manifest.json && cp ../../LICENSE release/extension/LICENSE && cp store/privacy-policy.md release/extension/PRIVACY.md && cp -R dist icons release/extension/ && cd release/extension && zip -qr ../../../../outputs/on-my-workbuddy-chrome.zip ."
+  }
+}
