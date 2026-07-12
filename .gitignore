@@ -22,7 +22,7 @@ release/
 *.keystore
 *.har
 coverage/
-work/
+/work/
 outputs/
 test-results/
 playwright-report/
