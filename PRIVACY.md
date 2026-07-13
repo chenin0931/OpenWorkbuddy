@@ -55,5 +55,5 @@ Support data through macOS. High-risk and external-side-effect actions are
 presented for approval according to the app's policy.
 
 Privacy questions and corrections can be submitted at
-https://github.com/chenin0931/on-my-workbuddy/issues. Please do not include API
+https://github.com/chenin0931/Openworkbuddy/issues. Please do not include API
 keys, private files or sensitive page content in a public issue.

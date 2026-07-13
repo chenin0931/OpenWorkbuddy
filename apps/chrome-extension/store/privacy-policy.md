@@ -13,4 +13,4 @@ On My WorkBuddy Chrome Bridge connects a tab explicitly selected by the user to 
 - The desktop application stores local task and audit records until the user removes them, subject to its configured detailed-log retention policy.
 - Revoking a tab grant detaches the debugger connection and prevents further task access.
 
-The complete product privacy notice is available at https://github.com/chenin0931/on-my-workbuddy/blob/main/PRIVACY.md. Support and privacy questions may be filed at https://github.com/chenin0931/on-my-workbuddy/issues.
+The complete product privacy notice is available at https://github.com/chenin0931/Openworkbuddy/blob/main/PRIVACY.md. Support and privacy questions may be filed at https://github.com/chenin0931/Openworkbuddy/issues.
