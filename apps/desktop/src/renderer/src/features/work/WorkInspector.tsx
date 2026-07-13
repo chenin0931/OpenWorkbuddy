@@ -108,7 +108,7 @@ function DetailsPanel({ detail, snapshot, onBindChrome, onOpenSettings }: Pick<W
       <div className="context-list">
         {workspace && <div><span className="context-icon"><Icon name="folder" size={14} /></span><span><strong>{workspace.name}</strong><small>{shortPath(workspace.path)}</small></span></div>}
         {model && <div><span className="context-icon"><Icon name="layers" size={14} /></span><span><strong>{model.name}</strong><small>{model.modelId}</small></span></div>}
-        <div><span className="context-icon trusted"><Icon name="shield" size={14} /></span><span><strong>文件访问</strong><small>{detail.accessMode === 'full_disk' ? '完全访问整个磁盘' : '工作区内操作按需批准'} · 高风险操作仍需确认</small></span></div>
+        <div><span className="context-icon trusted"><Icon name="shield" size={14} /></span><span><strong>执行权限</strong><small>{detail.accessMode === 'full_disk' ? '完全访问整个磁盘 · 工具自动执行' : '工作区内操作按需批准'}</small></span></div>
       </div>
     </details>
   </>

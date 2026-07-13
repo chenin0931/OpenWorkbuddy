@@ -311,8 +311,9 @@ serialized with file leases.
 ### Shell, Web, MCP and Chrome controls
 
 - **Shell:** a narrow deterministic allowlist covers commands such as `pwd`,
-  `ls`, `rg` and read-only Git inspection. Unknown commands, operators, network
-  access, installation, builds and writes require policy review or approval.
+  `ls`, `rg` and read-only Git inspection. In request-approval mode, unknown
+  commands and side effects pause for approval. Full-access mode automatically
+  executes every command not blocked by a deterministic product boundary.
 - **Web:** Search and Fetch enforce URL, redirect, address and response-size
   checks. Returned pages remain untrusted context.
 - **MCP:** stdio and Streamable HTTP servers are namespaced and schema
@@ -320,7 +321,8 @@ serialized with file leases.
   code and is not represented as sandboxed.
 - **Chrome:** the user must bind a tab to a run. The grant covers that tab and
   tabs opened from it, not unrelated existing tabs. Cookie export is not
-  supported. Submit, upload, purchase, send and delete actions require approval.
+  supported. Submit, upload, purchase, send and delete actions require approval
+  in request-approval mode and execute automatically in full-access mode.
 
 The full limitations are documented in [the security model](security.md).
 

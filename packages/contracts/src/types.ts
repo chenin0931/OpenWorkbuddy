@@ -406,6 +406,7 @@ export interface AppSettings {
   locale: string
   theme: 'system' | 'light' | 'dark'
   defaultExecutionMode: 'plan' | 'execute'
+  defaultAccessMode: RunAccessMode
   permissionMode: PermissionMode
   defaultModelProfileId?: string
   subagentModelProfileId?: string

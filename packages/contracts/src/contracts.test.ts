@@ -139,6 +139,12 @@ describe('renderer contracts', () => {
     }).success).toBe(false)
   })
 
+  it('accepts a default access mode in application settings', () => {
+    expect(DesktopInvokeContracts['settings:update'].input.parse({ defaultAccessMode: 'full_disk' }))
+      .toEqual({ defaultAccessMode: 'full_disk' })
+    expect(DesktopInvokeContracts['settings:update'].input.safeParse({ defaultAccessMode: 'unbounded' }).success).toBe(false)
+  })
+
   it('rejects unsafe renderer-visible source URLs', () => {
     const base = { title: 'Source', status: 'discovered' as const }
     expect(SourceRefSchema.safeParse({ ...base, url: 'https://example.com/news' }).success).toBe(true)

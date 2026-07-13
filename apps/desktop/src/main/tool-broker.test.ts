@@ -248,7 +248,7 @@ describe('ToolBroker capability enforcement', () => {
     expect(runnerCalls[0]).toMatchObject({ toolId: 'web.search', args: { query: 'OpenWorkbuddy', maxResults: 5 } })
   })
 
-  it('keeps outbound search behind approval in full access mode', async () => {
+  it('executes outbound search without approval in full access mode', async () => {
     const database = new FakeDatabase()
     database.run.accessMode = 'full_disk'
     database.run.readOnly = true
@@ -259,18 +259,15 @@ describe('ToolBroker capability enforcement', () => {
       return { engine: 'bing-html', query: input.args.query, resultCount: 0, results: [] }
     })
 
-    const pending = fixture.broker.handle({
+    await expect(fixture.broker.handle({
       runId: 'run-1',
       requestId: 'search-balanced',
       toolCallId: 'search-balanced',
       toolId: 'web_search',
       args: { query: 'OpenWorkbuddy' },
-    })
-    await new Promise((resolve) => setTimeout(resolve, 0))
-    expect(runnerCalls).toHaveLength(0)
-    expect(database.approvals).toHaveLength(1)
-    fixture.broker.rejectRunApprovals('run-1', 'test cleanup')
-    await expect(pending).rejects.toThrow('test cleanup')
+    })).resolves.toMatchObject({ query: 'OpenWorkbuddy' })
+    expect(runnerCalls).toHaveLength(1)
+    expect(database.approvals).toHaveLength(0)
   })
 
   it('treats request-approval as conservative even when the global convenience mode is balanced', async () => {
@@ -291,7 +288,7 @@ describe('ToolBroker capability enforcement', () => {
     await expect(pending).rejects.toThrow('test cleanup')
   })
 
-  it('uses the disk root only for full-access tool authorization while keeping the project cwd', async () => {
+  it('auto-executes all non-denied tools in full access while keeping the project cwd', async () => {
     const database = new FakeDatabase()
     database.run.accessMode = 'full_disk'
     database.granted = false
@@ -310,23 +307,30 @@ describe('ToolBroker capability enforcement', () => {
     expect(runnerCalls.every((call) => call.authorizedRoot === '/' && call.workspacePath === '/workspace')).toBe(true)
     expect(database.approvals).toHaveLength(0)
 
-    const deletion = fixture.broker.handle({
+    await expect(fixture.broker.handle({
       runId: 'run-1', requestId: 'delete-full', toolCallId: 'delete-full', toolId: 'file_delete',
       args: { path: '/tmp/outside.txt' },
-    })
-    await new Promise((resolve) => setTimeout(resolve, 0))
-    expect(database.approvals).toHaveLength(1)
-    fixture.broker.rejectRunApprovals('run-1', 'test cleanup')
-    await expect(deletion).rejects.toThrow('test cleanup')
+    })).resolves.toMatchObject({ path: '/tmp/outside.txt' })
 
-    const unknownShell = fixture.broker.handle({
+    await expect(fixture.broker.handle({
       runId: 'run-1', requestId: 'shell-full', toolCallId: 'shell-full', toolId: 'shell_run',
       args: { command: "python3 -c 'print(1)'" },
-    })
-    await new Promise((resolve) => setTimeout(resolve, 0))
-    expect(database.approvals).toHaveLength(2)
-    fixture.broker.rejectRunApprovals('run-1', 'test cleanup')
-    await expect(unknownShell).rejects.toThrow('test cleanup')
+    })).resolves.toMatchObject({ path: '/tmp/outside.txt' })
+
+    await expect(fixture.broker.handle({
+      runId: 'run-1', requestId: 'network-shell-full', toolCallId: 'network-shell-full', toolId: 'shell_run',
+      args: { command: 'curl https://example.com' },
+    })).resolves.toMatchObject({ path: '/tmp/outside.txt' })
+
+    expect(database.approvals).toHaveLength(0)
+    expect(runnerCalls).toHaveLength(5)
+    expect(runnerCalls.every((call) => call.authorizedRoot === '/' && call.workspacePath === '/workspace')).toBe(true)
+
+    await expect(fixture.broker.handle({
+      runId: 'run-1', requestId: 'macos-hard-deny', toolCallId: 'macos-hard-deny', toolId: 'shell_run',
+      args: { command: 'osascript -e \'tell application "Finder" to activate\'' },
+    })).rejects.toMatchObject({ code: 'shell.macos-app-automation-denied' })
+    expect(runnerCalls).toHaveLength(5)
   })
 
   it('fails closed instead of using the disk root when the run workspace disappeared', async () => {

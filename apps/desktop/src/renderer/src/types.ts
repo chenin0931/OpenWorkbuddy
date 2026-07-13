@@ -225,6 +225,7 @@ export interface SettingsView extends JsonRecord {
   language?: string
   memoryEnabled?: boolean
   defaultExecutionMode?: 'plan' | 'execute'
+  defaultAccessMode?: RunAccessMode
   permissionMode?: PermissionMode
   maxIterations?: number
   maxRunMinutes?: number

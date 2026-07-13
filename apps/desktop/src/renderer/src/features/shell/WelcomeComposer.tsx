@@ -8,6 +8,7 @@ export interface WelcomeComposerProps {
   workspace: WorkspaceItem | undefined
   models: ModelProfileItem[]
   defaultMode: 'plan' | 'execute'
+  defaultAccessMode: RunAccessMode
   onSubmit: (prompt: string, mode: 'plan' | 'execute', accessMode: RunAccessMode, modelId?: string, attachmentIds?: string[]) => void
   onOpenSettings: () => void
 }
@@ -22,12 +23,13 @@ export function WelcomeComposer({
   workspace,
   models,
   defaultMode,
+  defaultAccessMode,
   onSubmit,
   onOpenSettings,
 }: WelcomeComposerProps) {
   const [prompt, setPrompt] = useState('')
   const [mode, setMode] = useState<'plan' | 'execute'>(defaultMode)
-  const [accessMode, setAccessMode] = useState<RunAccessMode>('approval')
+  const [accessMode, setAccessMode] = useState<RunAccessMode>(defaultAccessMode)
   const [modelId, setModelId] = useState(models.find((model) => model.isDefault)?.id ?? models[0]?.id ?? '')
   const [attachments, setAttachments] = useState<Array<{ id: string; name: string }>>([])
   const [attachmentError, setAttachmentError] = useState<string>()
@@ -37,6 +39,8 @@ export function WelcomeComposer({
       setModelId(models.find((model) => model.isDefault)?.id ?? models[0]?.id ?? '')
     }
   }, [modelId, models])
+
+  useEffect(() => { setAccessMode(defaultAccessMode) }, [defaultAccessMode])
 
   return (
     <div className="welcome-view">
@@ -64,11 +68,11 @@ export function WelcomeComposer({
               className="access-mode-select"
               value={accessMode}
               onChange={(event) => setAccessMode(event.target.value as RunAccessMode)}
-              aria-label="文件访问权限"
-              title="完全访问允许读取和修改整个磁盘；删除、发送等高风险操作仍需确认"
+              aria-label="工作执行权限"
+              title="完全访问会自动执行文件、网络、Shell、MCP 与浏览器操作，不再逐项确认"
             >
               <option value="approval">请求批准</option>
-              <option value="full_disk">完全访问</option>
+              <option value="full_disk">完全访问（自动）</option>
             </select>
             <button type="button" className="attachment-button" onClick={async () => {
               try {

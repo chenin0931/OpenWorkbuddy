@@ -41,7 +41,7 @@ async function installMockBridge(page: Page, onboarding: boolean, failModelSecre
     const bootstrap = () => ({
       app: { name: 'OpenWorkbuddy', version: '0.3.0', platform: 'darwin', arch: 'x64', locale: 'zh-CN' },
       onboardingComplete: state.onboardingDone,
-      settings: { onboardingCompleted: state.onboardingDone, theme: themeMode, locale: 'zh-CN', memoryEnabled: true, permissionMode: state.permissionMode, timezone: 'Asia/Shanghai' },
+      settings: { onboardingCompleted: state.onboardingDone, theme: themeMode, locale: 'zh-CN', memoryEnabled: true, defaultAccessMode: 'approval', permissionMode: state.permissionMode, timezone: 'Asia/Shanghai' },
       workspaces: state.workspaceAdded ? [workspace] : [],
       modelProfiles: state.modelConnected ? [model] : [],
       runs: onboardingMode ? [] : [run()],

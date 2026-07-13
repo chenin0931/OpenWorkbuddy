@@ -238,7 +238,7 @@ export class RunCoordinator {
         this.emitRun(runId)
       }
       const runtimeAuthority = accessModeChanged
-        ? `<runtime-authority source="OpenWorkbuddy" trusted="true">文件访问已切换为 ${raw.accessMode === 'full_disk' ? '完全访问；授权根为 /，相对路径仍以当前工作区为基准' : '请求批准；授权根恢复为当前工作区'}。删除、发送、发布等高风险动作仍须宿主确认。</runtime-authority>\n\n`
+        ? `<runtime-authority source="OpenWorkbuddy" trusted="true">工作权限已切换为 ${raw.accessMode === 'full_disk' ? '完全访问；授权根为 /，相对路径仍以当前工作区为基准；所有未被策略硬拒绝的文件、Shell、网络、MCP 与浏览器操作自动执行，不再逐项确认' : '请求批准；授权根恢复为当前工作区；需要审批的操作必须等待用户处理'}。macOS TCC、只读子 Agent 与产品硬拒绝边界仍然有效。</runtime-authority>\n\n`
         : ''
       this.host.steer(runId, `${runtimeAuthority}${content}`, images)
     }

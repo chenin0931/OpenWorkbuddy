@@ -3,7 +3,7 @@ import { constants } from 'node:fs'
 import { lstat, open, realpath } from 'node:fs/promises'
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 import type { ApprovalRequest, ApprovalResponse, JsonValue, MemoryEntry, RunEvent, TaskStep, ToolCall, ToolDescriptor, VerificationSummary } from '@onmyworkbuddy/contracts'
-import { createApprovalRequest, evaluateCompletionGate, evaluateToolPolicy, isValidationShellCommand, resolveApproval } from '@onmyworkbuddy/core'
+import { createApprovalRequest, evaluateCompletionGate, evaluateToolPolicy, resolveApproval } from '@onmyworkbuddy/core'
 import type { AppDatabase } from './database'
 import type { ArtifactStore } from './artifact-store'
 import type { ChromeBridge } from './chrome-bridge'
@@ -129,15 +129,7 @@ function evaluateRunAccessPolicy(
 ): ReturnType<typeof evaluateToolPolicy> {
   const decision = evaluateToolPolicy({ call, descriptor })
   if (accessMode !== 'full_disk' || decision.effect !== 'require_approval') return decision
-
-  const command = typeof call.arguments === 'object' && call.arguments && !Array.isArray(call.arguments)
-    ? String((call.arguments as Record<string, unknown>).command ?? '')
-    : ''
-  const explicitlyAutomatic = decision.ruleId === 'filesystem.write'
-    || (decision.ruleId === 'shell.unknown-write' && isValidationShellCommand(command))
-  return explicitlyAutomatic
-    ? { ...decision, effect: 'allow', ruleId: `${decision.ruleId}.run-full-disk` }
-    : decision
+  return { ...decision, effect: 'allow', ruleId: `${decision.ruleId}.run-full-disk` }
 }
 
 export class ToolBroker {
@@ -179,10 +171,10 @@ export class ToolBroker {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     }
-    // The composer owns this run's durable authority. Ask mode deliberately
-    // uses the conservative base policy; full-disk mode relaxes only the two
-    // local actions enumerated above. It must not inherit unrelated global
-    // conveniences such as outbound search.
+    // The composer owns this run's durable authority. Ask mode uses the
+    // conservative base policy. Full-disk mode auto-executes every operation
+    // that the deterministic policy did not hard-deny; TCC, read-only child
+    // authority and product-level macOS app-control denials still win.
     const accessMode = rawRun.accessMode === 'full_disk' ? 'full_disk' : 'approval'
     const baseDecision = evaluateRunAccessPolicy(call, descriptor, accessMode)
     const memoryDisabled = tool.id === 'memory_propose' && this.database.getSetting<any>('appSettings', {}).memoryEnabled === false

@@ -489,6 +489,7 @@ export const AppSettingsSchema = z
     locale: z.string().min(2),
     theme: z.enum(['system', 'light', 'dark']),
     defaultExecutionMode: z.enum(['plan', 'execute']),
+    defaultAccessMode: RunAccessModeSchema,
     permissionMode: z.enum(['cautious', 'balanced', 'autonomous']),
     defaultModelProfileId: IdSchema.optional(),
     subagentModelProfileId: IdSchema.optional(),

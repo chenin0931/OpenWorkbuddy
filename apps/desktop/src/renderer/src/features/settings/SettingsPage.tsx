@@ -153,9 +153,9 @@ export function SettingsPage({ snapshot, selectedWorkspaceId, perform, onWorkspa
         <SettingRow title="启用记忆建议" detail="工作收尾时允许 WorkBuddy 提出带来源的候选记忆。"><Toggle checked={settings.memoryEnabled !== false} label="启用记忆" onChange={(checked) => void perform(() => bridge.updateSettings({ memoryEnabled: checked }), checked ? '记忆建议已启用' : '记忆建议已关闭')} /></SettingRow>
       </SettingsSection>
 
-      <SettingsSection icon="lock" title="工作权限" description="文件访问范围按工作选择，不设置覆盖所有工作的全局自动化级别。">
-        <SettingRow title="在输入框中选择" detail="新工作和追问时，在“添加文件”左侧选择“请求批准”或“完全访问”。"><span className="default-pill">按工作保存</span></SettingRow>
-        <div className="inline-notice"><Icon name="shield" /><span>完全访问会把当前工作的文件授权根扩展到整个磁盘；删除、发送、发布、搜索查询、网络命令和其他外部副作用仍需确认。</span></div>
+      <SettingsSection icon="lock" title="工作权限" description="每项工作保存自己的执行权限；完全访问不会逐项弹出审批。">
+        <SettingRow title="新工作默认权限" detail="开始工作后仍可在“添加文件”左侧临时切换。"><select value={String(settings.defaultAccessMode ?? 'approval')} onChange={(event) => void perform(() => bridge.updateSettings({ defaultAccessMode: event.target.value }), '默认工作权限已更新')}><option value="approval">请求批准</option><option value="full_disk">完全访问（自动执行）</option></select></SettingRow>
+        <div className="inline-notice warning"><Icon name="shield" /><span>完全访问会把授权根扩展到整个磁盘，并自动执行文件、Shell、网络、MCP 和浏览器操作。macOS 系统权限、只读子 Agent 和产品硬拒绝边界仍然有效。</span></div>
       </SettingsSection>
 
       <SettingsSection icon="shield" title="默认处理方式" description="只影响新工作；先整理计划时，宿主只提供只读能力。">

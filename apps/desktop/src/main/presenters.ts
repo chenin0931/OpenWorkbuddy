@@ -28,6 +28,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   locale: 'zh-CN',
   theme: 'system',
   defaultExecutionMode: 'execute',
+  defaultAccessMode: 'approval',
   permissionMode: 'balanced',
   launchAtLogin: false,
   memoryEnabled: true,
