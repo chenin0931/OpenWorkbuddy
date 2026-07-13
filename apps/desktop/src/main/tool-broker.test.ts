@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -413,9 +413,16 @@ describe('ToolBroker Skill resources', () => {
       const skillPath = join(root, 'skill')
       await mkdir(join(skillPath, 'references'), { recursive: true })
       await mkdir(join(skillPath, 'scripts'), { recursive: true })
+      await mkdir(join(skillPath, 'docs'), { recursive: true })
+      await mkdir(join(skillPath, '.private'), { recursive: true })
       await writeFile(join(skillPath, 'SKILL.md'), '# Skill\n')
       await writeFile(join(skillPath, 'references', 'guide.md'), 'trusted guide\n')
       await writeFile(join(skillPath, 'scripts', 'check.sh'), '#!/bin/sh\necho checked\n')
+      await writeFile(join(skillPath, 'docs', 'usage.md'), 'public docs\n')
+      await writeFile(join(skillPath, 'config.json'), '{"apiKey":"must-not-load"}\n')
+      await writeFile(join(skillPath, 'scripts', 'credentials.json'), '{"token":"must-not-load"}\n')
+      await writeFile(join(skillPath, '.env'), 'TOKEN=must-not-load\n')
+      await writeFile(join(skillPath, '.private', 'notes.md'), 'must-not-load\n')
       const outside = join(root, 'outside.md')
       await writeFile(outside, 'outside\n')
       await symlink(outside, join(skillPath, 'references', 'escape.md'))
@@ -424,11 +431,25 @@ describe('ToolBroker Skill resources', () => {
       database.skills.set('skill-1', { id: 'skill-1', name: 'Skill One', path: skillPath, enabled: true, permissions: {} })
       const fixture = brokerFixture(database, async () => { throw new Error('runner must not execute Skill resources') })
       const guide = await fixture.broker.handle({ runId: 'run-1', requestId: 'guide', toolCallId: 'skill-guide', toolId: 'skill_read', args: { skillId: 'skill-1', resource: 'references/guide.md' } }) as any
+      const canonicalSkillPath = await realpath(skillPath)
       expect(guide.instructions).toBe('trusted guide\n')
+      expect(guide.executionContext).toMatchObject({
+        workingDirectory: canonicalSkillPath,
+        scriptsDirectory: join(canonicalSkillPath, 'scripts'),
+        resourcePath: join(canonicalSkillPath, 'references', 'guide.md'),
+        resourceDirectory: join(canonicalSkillPath, 'references'),
+      })
+      expect(JSON.stringify(guide.executionContext)).not.toContain('must-not-load')
       const script = await fixture.broker.handle({ runId: 'run-1', requestId: 'script', toolCallId: 'skill-script', toolId: 'skill_read', args: { skillId: 'skill-1', resource: 'scripts/check.sh' } }) as any
       expect(script.instructions).toContain('echo checked')
+      const docs = await fixture.broker.handle({ runId: 'run-1', requestId: 'docs', toolCallId: 'skill-docs', toolId: 'skill_read', args: { skillId: 'skill-1', resource: 'docs/usage.md' } }) as any
+      expect(docs.instructions).toBe('public docs\n')
       await expect(fixture.broker.handle({ runId: 'run-1', requestId: 'traversal', toolCallId: 'skill-traversal', toolId: 'skill_read', args: { skillId: 'skill-1', resource: '../outside.md' } })).rejects.toMatchObject({ code: 'INVALID_SKILL_RESOURCE' })
       await expect(fixture.broker.handle({ runId: 'run-1', requestId: 'symlink', toolCallId: 'skill-symlink', toolId: 'skill_read', args: { skillId: 'skill-1', resource: 'references/escape.md' } })).rejects.toMatchObject({ code: 'SKILL_RESOURCE_SYMLINK' })
+      await expect(fixture.broker.handle({ runId: 'run-1', requestId: 'config', toolCallId: 'skill-config', toolId: 'skill_read', args: { skillId: 'skill-1', resource: 'config.json' } })).rejects.toMatchObject({ code: 'PRIVATE_SKILL_RESOURCE' })
+      await expect(fixture.broker.handle({ runId: 'run-1', requestId: 'credentials', toolCallId: 'skill-credentials', toolId: 'skill_read', args: { skillId: 'skill-1', resource: 'scripts/credentials.json' } })).rejects.toMatchObject({ code: 'PRIVATE_SKILL_RESOURCE' })
+      await expect(fixture.broker.handle({ runId: 'run-1', requestId: 'env', toolCallId: 'skill-env', toolId: 'skill_read', args: { skillId: 'skill-1', resource: '.env' } })).rejects.toMatchObject({ code: 'PRIVATE_SKILL_RESOURCE' })
+      await expect(fixture.broker.handle({ runId: 'run-1', requestId: 'hidden', toolCallId: 'skill-hidden', toolId: 'skill_read', args: { skillId: 'skill-1', resource: '.private/notes.md' } })).rejects.toMatchObject({ code: 'PRIVATE_SKILL_RESOURCE' })
     } finally {
       await rm(root, { recursive: true, force: true })
     }

@@ -107,9 +107,14 @@ export function compileContext(input: ContextCompilationInput): CompiledContext 
 
   const dynamicItems: ContextItem[] = []
   for (const selectedSkill of input.skills ?? []) {
+    const catalogEntry = [
+      `Skill ID: ${selectedSkill.manifest.id}`,
+      `Name: ${selectedSkill.manifest.name}`,
+      `Description: ${selectedSkill.manifest.description}`,
+    ].join('\n')
     const content = selectedSkill.instructions
-      ? `${selectedSkill.manifest.name}: ${selectedSkill.manifest.description}\n\n${selectedSkill.instructions}`
-      : `${selectedSkill.manifest.name}: ${selectedSkill.manifest.description}\nFull instructions have not been loaded.`
+      ? `${catalogEntry}\n\n${selectedSkill.instructions}`
+      : `${catalogEntry}\nFull instructions have not been loaded. Use skill_read with skillId "${selectedSkill.manifest.id}" before following this Skill.`
     dynamicItems.push(
       item({
         id: `skill-${selectedSkill.manifest.id}`,

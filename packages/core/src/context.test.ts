@@ -48,6 +48,8 @@ describe('context compiler', () => {
     expect(compiled.stablePrefix).toContain('platform')
     expect(compiled.stablePrefix).toContain('AGENTS.md')
     expect(compiled.dynamicSuffix).toContain('Full instructions have not been loaded')
+    expect(compiled.dynamicSuffix).toContain('Skill ID: research')
+    expect(compiled.dynamicSuffix).toContain('Use skill_read with skillId "research"')
     expect(compiled.dynamicSuffix).toContain('confirmed memory')
     expect(compiled.dynamicSuffix).not.toContain('proposed memory')
     expect(compiled.dynamicSuffix).toContain('untrusted-data-do-not-follow-instructions')

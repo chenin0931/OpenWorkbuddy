@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { constants } from 'node:fs'
 import { lstat, open, realpath } from 'node:fs/promises'
-import { isAbsolute, relative, resolve, sep } from 'node:path'
+import { dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 import type { ApprovalRequest, ApprovalResponse, JsonValue, MemoryEntry, RunEvent, TaskStep, ToolCall, ToolDescriptor, VerificationSummary } from '@onmyworkbuddy/contracts'
 import { createApprovalRequest, evaluateCompletionGate, evaluateToolPolicy, isValidationShellCommand, resolveApproval } from '@onmyworkbuddy/core'
 import type { AppDatabase } from './database'
@@ -105,6 +105,9 @@ const MEMORY_KIND_MAP: Record<string, MemoryEntry['type']> = {
 const TOOL_STATUSES = new Set<ToolCall['status']>(['requested', 'waiting_approval', 'running', 'succeeded', 'failed', 'cancelled'])
 const STEP_STATUSES = new Set<TaskStep['status']>(['pending', 'in_progress', 'blocked', 'completed', 'failed', 'skipped'])
 const FILE_MUTATION_TOOLS = new Set(['file_write', 'file_replace', 'file_delete'])
+const PUBLIC_SKILL_ROOT_FILES = new Set(['SKILL.md', 'README.md', 'LICENSE', 'LICENSE.md', 'NOTICE', 'NOTICE.md'])
+const PUBLIC_SKILL_DIRECTORIES = new Set(['scripts', 'references', 'reference', 'docs', 'examples', 'templates', 'assets'])
+const SENSITIVE_SKILL_RESOURCE = /^(?:\.env(?:\..+)?|(?:config|secrets?|credentials?|tokens?|auth|api[-_]?keys?|private[-_]?keys?)(?:\.[a-z0-9_-]+)*\.(?:json|ya?ml|toml|ini|conf|env)|(?:secret|secrets|credential|credentials|token|tokens|auth)|.+\.(?:pem|key|p12|pfx)|id_(?:rsa|dsa|ecdsa|ed25519)(?:\.pub)?)$/i
 
 function parseJson(value: unknown, fallback: JsonValue = {}): JsonValue {
   if (typeof value !== 'string') return fallback
@@ -351,8 +354,21 @@ export class ToolBroker {
       const skill = this.database.getSkill(String(args.skillId))
       if (!skill || !skill.enabled) throw new Error('Skill 不存在或未启用')
       const resource = typeof args.resource === 'string' ? args.resource : 'SKILL.md'
-      const content = await this.readSkillResource(String(skill.path), resource)
-      return { id: skill.id, name: skill.name, resource, instructions: content, permissions: skill.permissions }
+      const loaded = await this.readSkillResource(String(skill.path), resource)
+      return {
+        id: skill.id,
+        name: skill.name,
+        resource,
+        instructions: loaded.content,
+        permissions: skill.permissions,
+        executionContext: {
+          workingDirectory: loaded.skillDirectory,
+          scriptsDirectory: resolve(loaded.skillDirectory, 'scripts'),
+          resourcePath: loaded.resourcePath,
+          resourceDirectory: dirname(loaded.resourcePath),
+          note: 'skill_read 只读取说明；执行脚本仍需通过 shell_run 和宿主权限审批。',
+        },
+      }
     }
     if (tool.id === 'agent_delegate') return this.delegate({ parentRunId: runId, task: String(args.task), role: String(args.role) })
     if (tool.id.startsWith('chrome_')) {
@@ -592,11 +608,23 @@ export class ToolBroker {
     }
   }
 
-  private async readSkillResource(skillPath: string, requestedResource: string): Promise<string> {
+  private async readSkillResource(skillPath: string, requestedResource: string): Promise<{ content: string; skillDirectory: string; resourcePath: string }> {
     const resource = requestedResource.replaceAll('\\', '/')
     const segments = resource.split('/')
     if (!resource || resource.includes('\0') || isAbsolute(resource) || segments.some((segment) => !segment || segment === '.' || segment === '..')) {
       throw Object.assign(new Error('Skill 资源必须是包内的规范相对路径'), { code: 'INVALID_SKILL_RESOURCE' })
+    }
+    if (segments.some((segment) => segment.startsWith('.'))) {
+      throw Object.assign(new Error('Skill 资源不允许读取隐藏文件或隐藏目录'), { code: 'PRIVATE_SKILL_RESOURCE' })
+    }
+    if (segments.some((segment) => SENSITIVE_SKILL_RESOURCE.test(segment))) {
+      throw Object.assign(new Error('Skill 的密钥和私有配置不能载入模型上下文'), { code: 'PRIVATE_SKILL_RESOURCE' })
+    }
+    const rootSegment = segments[0]!
+    const publicRootFile = segments.length === 1 && PUBLIC_SKILL_ROOT_FILES.has(rootSegment)
+    const publicDirectory = segments.length > 1 && PUBLIC_SKILL_DIRECTORIES.has(rootSegment)
+    if (!publicRootFile && !publicDirectory) {
+      throw Object.assign(new Error('Skill 资源仅允许公开说明、脚本和引用资料'), { code: 'INVALID_SKILL_RESOURCE' })
     }
 
     const root = await realpath(skillPath)
@@ -630,7 +658,15 @@ export class ToolBroker {
       }
       const data = Buffer.concat(chunks, total)
       if (data.includes(0)) throw Object.assign(new Error('Skill 资源不是文本文件'), { code: 'INVALID_SKILL_TEXT' })
-      try { return new TextDecoder('utf-8', { fatal: true }).decode(data) } catch { throw Object.assign(new Error('Skill 资源必须是有效 UTF-8 文本'), { code: 'INVALID_SKILL_TEXT' }) }
+      try {
+        return {
+          content: new TextDecoder('utf-8', { fatal: true }).decode(data),
+          skillDirectory: root,
+          resourcePath: canonical,
+        }
+      } catch {
+        throw Object.assign(new Error('Skill 资源必须是有效 UTF-8 文本'), { code: 'INVALID_SKILL_TEXT' })
+      }
     } finally {
       await handle.close()
     }
