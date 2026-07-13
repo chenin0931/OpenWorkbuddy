@@ -35,7 +35,7 @@ interface TurnDraft {
 const TOOL_KIND_PATTERNS: Array<[ActivityKind, RegExp]> = [
   ['mcp', /^(?:mcp(?:[._:/-]|$))|(?:[^/]+\/[^/]+$)/i],
   ['plan', /^(?:task_(?:plan|step_update|complete)|plan(?:[._-]|$)|agent_delegate)/i],
-  ['files', /^(?:file(?:[._-]|$)|read_file|write_file|edit_file|apply_patch|glob$|grep$|rg$)/i],
+  ['files', /^(?:file(?:[._-]|$)|attachment(?:[._-]|$)|output(?:[._-]|$)|read_file|write_file|edit_file|apply_patch|glob$|grep$|rg$)/i],
   ['shell', /^(?:shell(?:[._-]|$)|terminal(?:[._-]|$)|exec(?:[._-]|$)|bash$|command(?:[._-]|$))/i],
   ['web', /^(?:web(?:[._-]|$)|chrome(?:[._-]|$)|browser(?:[._-]|$)|fetch_url$)/i],
 ]

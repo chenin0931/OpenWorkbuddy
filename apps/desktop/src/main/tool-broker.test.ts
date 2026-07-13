@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -16,6 +16,7 @@ class FakeDatabase {
   granted = true
   approvals: any[] = []
   skills = new Map<string, any>()
+  workspaceRoot = '/workspace'
   private nextToolReceipt = 0
   currentTurnStartedAt: string | undefined
 
@@ -29,7 +30,8 @@ class FakeDatabase {
   }
 
   getRun = (id: string) => id === this.run.id ? this.run : undefined
-  getWorkspace = () => ({ root_path: '/workspace' })
+  getWorkspace = () => ({ root_path: this.workspaceRoot })
+  getArtifact = (id: string) => this.artifactRows.find((artifact) => artifact.id === id)
   getSetting = <T>(key: string, fallback: T): T => (this.settings[key] ?? fallback) as T
   hasRunGrant = () => this.granted
   audit = () => undefined
@@ -72,7 +74,13 @@ function brokerFixture(database = new FakeDatabase(), execute?: (input: any) => 
       database.artifactRows.push({ ...artifact, name: input.name })
       return artifact
     },
-    putBuffer: async () => { throw new Error('not used') },
+    putBuffer: async (input: any) => {
+      const artifact = { id: `artifact-${stored.length + 1}`, ...input, name: input.name, size: input.data.length, sha256: 'a'.repeat(64), mime: input.mime ?? 'application/octet-stream' }
+      stored.push(artifact)
+      database.artifactRows.push({ ...artifact, run_id: input.runId, metadata_json: JSON.stringify(input.metadata ?? {}) })
+      return artifact
+    },
+    read: async (path: string) => readFile(path),
   }
   const broker = new ToolBroker(database as any, runner as any, artifacts as any, {} as any, {} as any, (event) => events.push(event), async () => ({}))
   return { broker, database, stored, events }
@@ -89,7 +97,7 @@ describe('ToolBroker completion gate', () => {
     expect(result.outcome).toBe('partial')
     expect(fixture.database.run).toMatchObject({ status: 'verifying', outcome: 'partial' })
     expect(result.verification?.summary).toContain('incomplete step')
-    expect(result.verification?.summary).toContain('unsettled tool call')
+    expect(result.verification?.summary).toContain('必要工具操作仍失败')
   })
 
   it('treats task_complete alone as ordinary conversation instead of inventing a partial verdict', async () => {
@@ -158,6 +166,46 @@ describe('ToolBroker completion gate', () => {
 })
 
 describe('ToolBroker file leases and artifacts', () => {
+  it('opens only attachments belonging to the current run without scanning by filename', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'openworkbuddy-attachment-'))
+    const path = join(directory, 'dataset.csv')
+    await writeFile(path, 'value\n42\n')
+    const database = new FakeDatabase()
+    database.artifactRows.push({ id: 'attachment-1', run_id: 'run-1', kind: 'attachment', name: 'dataset.csv', path, mime: 'text/csv', size: 9, sha256: 'b'.repeat(64) })
+    const fixture = brokerFixture(database)
+
+    const opened = await fixture.broker.handle({ runId: 'run-1', requestId: 'open-1', toolCallId: 'open-1', toolId: 'attachment_open', args: { artifactId: 'attachment-1' } }) as any
+    expect(opened).toMatchObject({ artifactId: 'attachment-1', path, mime: 'text/csv' })
+    expect(opened.preview).toContain('42')
+    await expect(fixture.broker.handle({ runId: 'run-1', requestId: 'open-2', toolCallId: 'open-2', toolId: 'attachment_open', args: { artifactId: 'missing' } })).rejects.toMatchObject({ code: 'ATTACHMENT_NOT_AVAILABLE' })
+    await rm(directory, { recursive: true, force: true })
+  })
+
+  it('registers safe generated files as final outputs and rejects credentials', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'openworkbuddy-output-'))
+    await writeFile(join(directory, 'report.md'), '# Result\n')
+    await writeFile(join(directory, '.env'), 'TOKEN=secret\n')
+    const database = new FakeDatabase()
+    database.workspaceRoot = directory
+    const fixture = brokerFixture(database)
+
+    const result = await fixture.broker.handle({ runId: 'run-1', requestId: 'output-1', toolCallId: 'output-1', toolId: 'output_register', args: { outputs: [{ path: 'report.md', label: '分析报告.md' }] } }) as any
+    expect(result).toMatchObject({ registered: 1 })
+    expect(fixture.stored).toContainEqual(expect.objectContaining({ kind: 'final_output', name: '分析报告.md' }))
+    await expect(fixture.broker.handle({ runId: 'run-1', requestId: 'output-2', toolCallId: 'output-2', toolId: 'output_register', args: { outputs: [{ path: '.env' }] } })).rejects.toMatchObject({ code: 'SENSITIVE_OUTPUT' })
+    await rm(directory, { recursive: true, force: true })
+  })
+
+  it('offloads long web bodies and generic tool results before returning them to the model', async () => {
+    const fixture = brokerFixture()
+    const web = await (fixture.broker as any).captureArtifacts('run-1', { id: 'web_fetch' }, { url: 'https://example.test', status: 200, contentType: 'text/plain', text: 'x'.repeat(20_000), total: 20_000 })
+    expect(web.text).toHaveLength(12_000)
+    expect(web.artifact.id).toBeDefined()
+    const generic = await (fixture.broker as any).captureArtifacts('run-1', { id: 'mcp_call_tool' }, { content: 'y'.repeat(40_000) })
+    expect(generic.preview).toHaveLength(8_000)
+    expect(fixture.stored.filter((artifact) => artifact.kind === 'tool_result')).toHaveLength(2)
+  })
+
   it('stages long output in bounded chunks and commits it as one atomic file mutation', async () => {
     const executed: any[] = []
     const fixture = brokerFixture(new FakeDatabase(), async (input) => {
@@ -463,7 +511,7 @@ describe('ToolBroker capability enforcement', () => {
     expect(persisted).toMatchObject({
       url: 'https://large.example/article',
       status: 200,
-      preview: expect.stringContaining('[CONTENT OMITTED'),
+      text: expect.stringContaining('[CONTENT OMITTED'),
     })
     expect(JSON.stringify(persisted)).not.toContain('private page content')
   })

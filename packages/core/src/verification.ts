@@ -23,7 +23,7 @@ export function evaluateCompletionGate(input: CompletionGateInput): Verification
     (step) => step.status === 'completed' && !step.verification?.trim(),
   )
   const unsettledTools = (input.toolCalls ?? []).filter(
-    (call) => call.status !== 'succeeded' && call.status !== 'cancelled',
+    (call) => call.status === 'requested' || call.status === 'waiting_approval' || call.status === 'running',
   )
   const failedChecks = input.checks.filter((check) => check.status === 'failed')
   const missingChecks = input.checks.filter((check) => check.status === 'not_run')

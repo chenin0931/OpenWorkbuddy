@@ -436,7 +436,9 @@ export async function safeFetch(urlInput: string, dependencies: PublicFetchDepen
   const decoded = decodePublicBody(response.contentType, response.body)
   const body = decoded.text
   const text = response.contentType.includes('html') ? plainTextFromHtml(body) : body
-  return { url: response.url.toString(), status: response.status, contentType: response.contentType, charset: decoded.charset, ...truncate(text) }
+  // Keep the complete bounded response for the broker. The broker stores long
+  // bodies in the Artifact Store before returning a compact model-facing view.
+  return { url: response.url.toString(), status: response.status, contentType: response.contentType, charset: decoded.charset, ...truncate(text, MAX_PUBLIC_RESPONSE_BYTES) }
 }
 
 /** Searches through a fixed public endpoint and returns links only; result pages are not fetched automatically. */

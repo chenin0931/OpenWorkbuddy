@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest'
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
-import { BoundedTextCapture } from './tool-runner'
+import { BoundedTextCapture, searchFilesFallback } from './tool-runner'
 
 describe('BoundedTextCapture', () => {
   it('returns small output unchanged and counts UTF-8 bytes', () => {
@@ -52,5 +55,20 @@ describe('BoundedTextCapture', () => {
     expect(snapshot.total).toBe(2 * 1024 * 1024 + Buffer.byteLength('final-line'))
     expect(snapshot.omittedBytes).toBe(snapshot.total - 128)
     expect(snapshot.text.endsWith('final-line')).toBe(true)
+  })
+})
+
+describe('built-in file search fallback', () => {
+  it('finds text without rg while skipping dependency and build directories', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'openworkbuddy-search-'))
+    await mkdir(join(root, 'src'))
+    await mkdir(join(root, 'node_modules'))
+    await writeFile(join(root, 'src', 'report.md'), 'GraphRAG evidence\nsecond line\n')
+    await writeFile(join(root, 'node_modules', 'ignored.txt'), 'GraphRAG hidden\n')
+
+    const result = await searchFilesFallback(root, 'GraphRAG') as any
+    expect(result).toMatchObject({ engine: 'builtin', matchCount: 1 })
+    expect(result.matches[0]).toMatchObject({ path: 'src/report.md', line: 1, column: 1 })
+    await rm(root, { recursive: true, force: true })
   })
 })

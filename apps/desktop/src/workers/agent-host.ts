@@ -172,7 +172,7 @@ async function startRun(command: StartCommand): Promise<void> {
   const { models, model, provider } = await createRuntime(command.provider, command.modelId, command.apiKey)
   const thinkingLevel = resolveRuntimeThinkingLevel(provider, model.id, command.thinkingLevel)
   const readLimiter = new ConcurrencyLimiter(command.maxParallelReadTools ?? 4)
-  const initialToolIds = new Set(['task_plan', 'task_step_update', 'task_complete', 'file_list', 'file_read', 'file_search', 'web_search', 'web_fetch', 'skill_read', 'agent_delegate'])
+  const initialToolIds = new Set(['task_plan', 'task_step_update', 'task_complete', 'file_list', 'file_read', 'file_search', 'attachment_open', 'output_register', 'web_search', 'web_fetch', 'skill_read', 'agent_delegate'])
   const descriptorById = new Map(command.tools.map((descriptor) => [descriptor.id, descriptor]))
   const loadedToolIds = new Set(command.tools.filter((descriptor) => initialToolIds.has(descriptor.id)).map((descriptor) => descriptor.id))
   const deferredTools = command.tools.filter((descriptor) => !loadedToolIds.has(descriptor.id))

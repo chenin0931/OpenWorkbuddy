@@ -128,6 +128,15 @@ describe('completion gate', () => {
     ).toBe('verified')
   })
 
+  it('blocks active tool calls but lets the host classify terminal failed attempts', () => {
+    const tool = {
+      id: 'tool-1', runId: 'run-1', toolName: 'shell.command', source: 'builtin' as const,
+      arguments: {}, idempotent: true, createdAt: now, updatedAt: now,
+    }
+    expect(evaluateCompletionGate({ steps: [], toolCalls: [{ ...tool, status: 'running' }], checks: [{ name: 'tests', status: 'passed' }] }).status).toBe('partial')
+    expect(evaluateCompletionGate({ steps: [], toolCalls: [{ ...tool, status: 'failed' }], checks: [{ name: 'tests', status: 'passed' }] }).status).toBe('verified')
+  })
+
   it('requires declared completed steps to carry verification evidence', () => {
     const step = {
       id: 'step-1', runId: 'run-1', title: 'Implement', ordinal: 0, status: 'completed' as const,

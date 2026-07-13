@@ -694,9 +694,18 @@ export class RunCoordinator {
     let totalBytes = 0
     for (const row of rows) {
       const mime = String(row.mime ?? '')
+      items.push({
+        id: `attachment-manifest-${row.id}`,
+        kind: 'environment',
+        content: `用户已附加文件。artifactId: ${row.id}\n名称：${row.name}\n媒体类型：${mime || 'application/octet-stream'}\n大小：${row.size} bytes\n需要读取或交给 Shell 时调用 attachment_open({ artifactId: "${row.id}" })；禁止按文件名扫描磁盘。`,
+        source: `attachment-manifest:${row.id}`,
+        trusted: true,
+        priority: 910,
+        stable: false,
+      })
       const isText = mime.startsWith('text/') || /(?:json|xml|yaml|javascript)/i.test(mime)
       if (!isText || Number(row.size) > 128 * 1024 || totalBytes + Number(row.size) > 256 * 1024) {
-        items.push({ id: `attachment-meta-${row.id}`, kind: 'untrusted_content', content: `附件名称：${row.name}\n媒体类型：${mime || 'application/octet-stream'}\n大小：${row.size} bytes\n内容未以内联文本加载。`, source: `attachment:${row.name}`, trusted: false, priority: 500, stable: false })
+        items.push({ id: `attachment-meta-${row.id}`, kind: 'untrusted_content', content: `附件 ${row.name} 的内容未以内联文本加载。`, source: `attachment:${row.name}`, trusted: false, priority: 500, stable: false })
         continue
       }
       const content = await readFile(row.path, 'utf8')

@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { readFile, readdir, stat } from 'node:fs/promises'
+import { join, relative } from 'node:path'
 import process from 'node:process'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
@@ -32,6 +33,43 @@ type CachedMcpConnection = McpClientEntry & { close(): Promise<void> }
 const mcpConnections = new FingerprintedConnectionCache<CachedMcpConnection>()
 const MAX_TEXT = 2 * 1024 * 1024
 const MAX_PROCESS_OUTPUT_BYTES = 128 * 1024
+const SEARCH_EXCLUDED_DIRECTORIES = new Set(['.git', 'node_modules', 'dist', 'build', 'out', 'outputs', 'target'])
+
+export async function searchFilesFallback(root: string, query: string, limit = 500): Promise<Record<string, unknown>> {
+  let matcher: RegExp
+  try { matcher = new RegExp(query, 'giu') } catch { matcher = new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'giu') }
+  const matches: Array<{ path: string; line: number; column: number; text: string }> = []
+  let scannedFiles = 0
+  const visit = async (directory: string): Promise<void> => {
+    if (matches.length >= limit || scannedFiles >= 20_000) return
+    const entries = await readdir(directory, { withFileTypes: true })
+    for (const entry of entries) {
+      if (matches.length >= limit || scannedFiles >= 20_000) break
+      if (entry.isSymbolicLink()) continue
+      const path = join(directory, entry.name)
+      if (entry.isDirectory()) {
+        if (!SEARCH_EXCLUDED_DIRECTORIES.has(entry.name)) await visit(path)
+        continue
+      }
+      if (!entry.isFile()) continue
+      scannedFiles += 1
+      const info = await stat(path)
+      if (info.size > MAX_TEXT) continue
+      const data = await readFile(path)
+      if (data.includes(0)) continue
+      const lines = data.toString('utf8').split(/\r?\n/)
+      for (let lineIndex = 0; lineIndex < lines.length && matches.length < limit; lineIndex += 1) {
+        const line = lines[lineIndex] ?? ''
+        matcher.lastIndex = 0
+        const match = matcher.exec(line)
+        if (!match) continue
+        matches.push({ path: relative(root, path) || entry.name, line: lineIndex + 1, column: match.index + 1, text: line.slice(0, 1_000) })
+      }
+    }
+  }
+  await visit(root)
+  return { engine: 'builtin', query, root, matches, matchCount: matches.length, scannedFiles, truncated: matches.length >= limit || scannedFiles >= 20_000 }
+}
 
 const send = (message: Record<string, unknown>): void => {
   if (!parent) throw new Error('Tool Runner IPC 不可用')
@@ -169,7 +207,12 @@ async function execute(command: Extract<Command, { type: 'execute' }>): Promise<
     case 'file.search': {
       const { target } = await resolveAuthorizedPath(authorizationRoot, args.path ?? '.', false, workspacePath)
       const rgArgs = ['--json', '--hidden', '--glob', '!.git/**', '--glob', '!node_modules/**', String(args.query), target]
-      return runProcess(command.requestId, 'rg', rgArgs, target, 60_000)
+      try {
+        return await runProcess(command.requestId, 'rg', rgArgs, target, 60_000)
+      } catch (error: any) {
+        if (error?.code !== 'ENOENT') throw error
+        return searchFilesFallback(target, String(args.query))
+      }
     }
     case 'file.write': {
       return writeFileSafely(authorizationRoot, String(args.path), String(args.content), args.expectedSha256, workspacePath)

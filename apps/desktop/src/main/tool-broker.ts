@@ -1,7 +1,7 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { constants } from 'node:fs'
-import { lstat, open, realpath } from 'node:fs/promises'
-import { dirname, isAbsolute, relative, resolve, sep } from 'node:path'
+import { lstat, open, readFile, realpath } from 'node:fs/promises'
+import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 import type { ApprovalRequest, ApprovalResponse, JsonValue, MemoryEntry, RunEvent, TaskStep, ToolCall, ToolDescriptor, VerificationSummary } from '@onmyworkbuddy/contracts'
 import { createApprovalRequest, evaluateCompletionGate, evaluateToolPolicy, resolveApproval } from '@onmyworkbuddy/core'
 import type { AppDatabase } from './database'
@@ -23,7 +23,7 @@ interface PendingApproval {
 
 const sourceFor = (id: string): ToolDescriptor['source'] => id.startsWith('chrome_') ? 'chrome' : id.startsWith('mcp_') ? 'mcp' : 'builtin'
 const policyName = (id: string): string => ({
-  file_list: 'file.list', file_read: 'file.read', file_search: 'file.search', file_write: 'file.write', file_draft_start: 'file.stage', file_draft_append: 'file.stage', file_draft_commit: 'file.write', file_replace: 'file.edit', file_delete: 'file.delete',
+  file_list: 'file.list', file_read: 'file.read', file_search: 'file.search', attachment_open: 'attachment.open', output_register: 'output.register', file_write: 'file.write', file_draft_start: 'file.stage', file_draft_append: 'file.stage', file_draft_commit: 'file.write', file_replace: 'file.edit', file_delete: 'file.delete',
   shell_run: 'shell.command', web_search: 'web.search', web_fetch: 'web.fetch', mcp_list_tools: 'mcp.list', mcp_call_tool: 'mcp.call', skill_read: 'skill.read', memory_propose: 'memory.propose',
   task_plan: 'task.plan', task_complete: 'task.complete', agent_delegate: 'agent.delegate', chrome_tabs: 'chrome.read', chrome_snapshot: 'chrome.read_dom',
   chrome_screenshot: 'chrome.screenshot', chrome_navigate: 'chrome.navigate', chrome_click: 'chrome.click', chrome_type: 'chrome.input_sensitive', chrome_open_tab: 'chrome.navigate',
@@ -111,6 +111,10 @@ const MAX_UNIQUE_SEARCHES_PER_TURN = 10
 const PUBLIC_SKILL_ROOT_FILES = new Set(['SKILL.md', 'README.md', 'LICENSE', 'LICENSE.md', 'NOTICE', 'NOTICE.md'])
 const PUBLIC_SKILL_DIRECTORIES = new Set(['scripts', 'references', 'reference', 'docs', 'examples', 'templates', 'assets'])
 const SENSITIVE_SKILL_RESOURCE = /^(?:\.env(?:\..+)?|(?:config|secrets?|credentials?|tokens?|auth|api[-_]?keys?|private[-_]?keys?)(?:\.[a-z0-9_-]+)*\.(?:json|ya?ml|toml|ini|conf|env)|(?:secret|secrets|credential|credentials|token|tokens|auth)|.+\.(?:pem|key|p12|pfx)|id_(?:rsa|dsa|ecdsa|ed25519)(?:\.pub)?)$/i
+const SENSITIVE_OUTPUT_FILE = /^(?:\.env(?:\..+)?|.*(?:secret|credential|token|api[-_]?key|private[-_]?key).*(?:json|ya?ml|toml|ini|conf|env)?|.+\.(?:pem|key|p12|pfx)|id_(?:rsa|dsa|ecdsa|ed25519)(?:\.pub)?)$/i
+const MAX_OUTPUT_FILES = 100
+const MAX_OUTPUT_FILE_BYTES = 50 * 1024 * 1024
+const MAX_OUTPUT_TOTAL_BYTES = 250 * 1024 * 1024
 
 function parseJson(value: unknown, fallback: JsonValue = {}): JsonValue {
   if (typeof value !== 'string') return fallback
@@ -119,6 +123,15 @@ function parseJson(value: unknown, fallback: JsonValue = {}): JsonValue {
 
 function validationCommand(command: string): boolean {
   return /(?:^|\s)(?:pnpm|npm|yarn|bun)\s+(?:run\s+)?(?:test|lint|typecheck|check|build)\b|\b(?:vitest|jest|pytest|eslint|xcodebuild|tsc\s+--noEmit|cargo\s+(?:test|check|build)|go\s+test|swift\s+test|git\s+diff\s+--check)\b/i.test(command)
+}
+
+function toolTargetFingerprint(row: any): string {
+  const args = parseJson(row.arguments_json)
+  if (!args || Array.isArray(args) || typeof args !== 'object') return String(row.tool_id)
+  const record = args as Record<string, unknown>
+  const target = record.path ?? record.url ?? record.serverId ?? record.tabId ?? record.command ?? ''
+  const action = record.toolName ?? record.selector ?? ''
+  return `${String(row.tool_id)}:${String(target).normalize('NFKC').trim()}:${String(action).normalize('NFKC').trim()}`
 }
 
 function readOnlyRun(raw: any): boolean {
@@ -444,6 +457,7 @@ export class ToolBroker {
         },
       }
     }
+    if (tool.id === 'attachment_open') return this.openAttachment(runId, String(args.artifactId))
     if (tool.id === 'agent_delegate') return this.delegate({ parentRunId: runId, task: String(args.task), role: String(args.role) })
     if (tool.id.startsWith('chrome_')) {
       const result = await this.chrome.executeTool(runId, tool.id, args)
@@ -459,6 +473,9 @@ export class ToolBroker {
     const workspace = this.database.getWorkspace(run.workspaceId)
     if (!workspace?.root_path) throw Object.assign(new Error('任务工作区不存在或已被移除'), { code: 'WORKSPACE_REQUIRED' })
     const authorizedRoot = run.accessMode === 'full_disk' ? '/' : workspace.root_path
+    if (tool.id === 'output_register') {
+      return this.registerOutputs(runId, workspace.root_path, authorizedRoot, Array.isArray(args.outputs) ? args.outputs as Array<{ path: string; label?: string }> : [])
+    }
     if (tool.id === 'file_draft_commit') {
       const draftId = String(args.draftId)
       const draft = this.fileDrafts.get(draftId)
@@ -608,7 +625,7 @@ export class ToolBroker {
         detail: `${succeeded} 成功，${failed} 失败`,
       })
     }
-    const observableReads = rows.filter((row) => ['file_list', 'file_read', 'file_search', 'web_search', 'web_fetch', 'skill_read', 'chrome_snapshot'].includes(String(row.tool_id)))
+    const observableReads = rows.filter((row) => ['file_list', 'file_read', 'file_search', 'attachment_open', 'web_search', 'web_fetch', 'skill_read', 'chrome_snapshot'].includes(String(row.tool_id)))
     if (observableReads.length > 0) {
       const failedReads = observableReads.filter((row) => row.state === 'failed').length
       const succeededReads = observableReads.filter((row) => row.state === 'succeeded' && row.result_json !== null).length
@@ -636,12 +653,22 @@ export class ToolBroker {
         updatedAt: String(step.updatedAt ?? step.updated_at),
       }
     })
-    const gateToolCalls = toolCalls.map((call) =>
-      ['web.search', 'web.fetch'].includes(call.toolName) && call.status === 'failed'
-        ? { ...call, status: 'cancelled' as const }
-        : call,
-    )
-    const gate = evaluateCompletionGate({ steps, toolCalls: gateToolCalls, checks, evidence: reportedEvidence, unverified })
+    const unresolvedFailures = rows.filter((row, index) => {
+      if (row.state !== 'failed') return false
+      const toolId = String(row.tool_id)
+      if (['file_list', 'file_read', 'file_search', 'attachment_open', 'web_search', 'web_fetch', 'skill_read'].includes(toolId)) return false
+      const args = parseJson(row.arguments_json) as Record<string, unknown>
+      if (toolId === 'shell_run' && !validationCommand(String(args?.command ?? ''))) return false
+      const fingerprint = toolTargetFingerprint(row)
+      const recovered = rows.slice(index + 1).some((later) => later.state === 'succeeded' && toolTargetFingerprint(later) === fingerprint)
+      if (recovered) return false
+      if (toolId === 'shell_run' && validationRows.some(({ row: later }) => later.state === 'succeeded' && String(later.created_at) > String(row.created_at))) return false
+      return true
+    })
+    const gateUnverified = unresolvedFailures.length > 0
+      ? [...unverified, `${unresolvedFailures.length} 个必要工具操作仍失败，尚未被同目标成功回执或后续验证恢复`]
+      : unverified
+    const gate = evaluateCompletionGate({ steps, toolCalls, checks, evidence: reportedEvidence, unverified: gateUnverified })
     const submittedSummary = String(args.summary ?? '').trim()
     const verification: VerificationSummary = {
       ...gate,
@@ -693,19 +720,111 @@ export class ToolBroker {
       delete safe.after
       return { ...safe, snapshotArtifactId: snapshot.id, diffArtifactId: diff.id }
     }
+    if (tool.id === 'web_fetch' && result && typeof result === 'object' && typeof result.text === 'string' && Buffer.byteLength(result.text, 'utf8') > 12_000) {
+      const text = String(result.text)
+      const artifact = await this.artifacts.putText({
+        runId,
+        name: `web-fetch-${Date.now()}.txt`,
+        kind: 'tool_result',
+        content: text,
+        mime: 'text/plain',
+        metadata: { url: result.url, status: result.status, contentType: result.contentType, total: result.total },
+      })
+      return {
+        url: result.url,
+        status: result.status,
+        contentType: result.contentType,
+        charset: result.charset,
+        total: result.total ?? Buffer.byteLength(text, 'utf8'),
+        truncated: true,
+        text: text.slice(0, 12_000),
+        artifact: this.publicArtifactRef(artifact),
+      }
+    }
     const serialized = JSON.stringify(result)
-    if (Buffer.byteLength(serialized) > 128 * 1024) {
+    if (Buffer.byteLength(serialized) > 32 * 1024) {
       const artifact = await this.artifacts.putText({ runId, name: `${tool.id}-${Date.now()}.json`, kind: 'tool_result', content: serialized, mime: 'application/json' })
       const source = result && typeof result === 'object' && !Array.isArray(result) ? result as Record<string, unknown> : {}
       const metadata = Object.fromEntries(['url', 'status', 'contentType', 'charset', 'total', 'engine', 'query', 'resultCount']
         .filter((key) => key in source)
         .map((key) => [key, source[key]]))
-      const artifactRef = Object.fromEntries(['id', 'runId', 'kind', 'name', 'displayName', 'sha256', 'mime', 'mediaType', 'size', 'byteLength']
-        .filter((key) => key in artifact)
-        .map((key) => [key, artifact[key]]))
-      return { ...metadata, truncated: true, artifact: artifactRef, preview: serialized.slice(0, 24_000) }
+      return { ...metadata, truncated: true, artifact: this.publicArtifactRef(artifact), preview: serialized.slice(0, 8_000) }
     }
     return result
+  }
+
+  private publicArtifactRef(artifact: any): Record<string, unknown> {
+    return Object.fromEntries(['id', 'runId', 'kind', 'name', 'displayName', 'sha256', 'mime', 'mediaType', 'size', 'byteLength']
+      .filter((key) => key in artifact)
+      .map((key) => [key, artifact[key]]))
+  }
+
+  private async openAttachment(runId: string, artifactId: string): Promise<Record<string, unknown>> {
+    const artifact = this.database.getArtifact(artifactId)
+    if (!artifact || artifact.kind !== 'attachment' || String(artifact.run_id ?? artifact.runId ?? '') !== runId) {
+      throw Object.assign(new Error('附件不存在或不属于当前任务'), { code: 'ATTACHMENT_NOT_AVAILABLE' })
+    }
+    const size = Number(artifact.size ?? 0)
+    const mime = String(artifact.mime ?? 'application/octet-stream')
+    const result: Record<string, unknown> = {
+      artifactId,
+      name: String(artifact.name),
+      path: String(artifact.path),
+      mime,
+      size,
+      sha256: String(artifact.sha256),
+    }
+    const isText = mime.startsWith('text/') || /(?:json|xml|yaml|javascript|csv|tab-separated)/i.test(mime)
+    if (isText && size <= 1024 * 1024) {
+      const content = await this.artifacts.read(String(artifact.path))
+      result.preview = content.toString('utf8').slice(0, 12_000)
+      result.truncated = content.byteLength > 12_000
+    }
+    return result
+  }
+
+  private async registerOutputs(
+    runId: string,
+    workspacePath: string,
+    authorizedRoot: string,
+    outputs: Array<{ path: string; label?: string }>,
+  ): Promise<{ registered: number; outputs: Array<Record<string, unknown>> }> {
+    if (outputs.length === 0 || outputs.length > MAX_OUTPUT_FILES) throw Object.assign(new Error(`产物数量必须为 1 到 ${MAX_OUTPUT_FILES}`), { code: 'INVALID_OUTPUT_COUNT' })
+    const canonicalRoot = await realpath(authorizedRoot)
+    const existing = this.database.listArtifacts(runId).filter((artifact: any) => artifact.kind === 'final_output')
+    const registered: Array<Record<string, unknown>> = []
+    let totalBytes = 0
+    for (const output of outputs) {
+      const requested = String(output.path ?? '')
+      if (!requested || requested.includes('\0')) throw Object.assign(new Error('产物路径无效'), { code: 'INVALID_OUTPUT_PATH' })
+      const target = isAbsolute(requested) ? resolve(requested) : resolve(workspacePath, requested)
+      const direct = await lstat(target)
+      if (direct.isSymbolicLink()) throw Object.assign(new Error('产物不能是符号链接'), { code: 'OUTPUT_SYMLINK' })
+      if (!direct.isFile()) throw Object.assign(new Error('产物必须是普通文件'), { code: 'OUTPUT_NOT_FILE' })
+      if (SENSITIVE_OUTPUT_FILE.test(basename(target))) throw Object.assign(new Error('凭据、密钥和隐藏认证文件不能登记为产物'), { code: 'SENSITIVE_OUTPUT' })
+      const canonical = await realpath(target)
+      const inside = relative(canonicalRoot, canonical)
+      if (inside === '..' || inside.startsWith(`..${sep}`) || isAbsolute(inside)) throw Object.assign(new Error('产物超出当前授权范围'), { code: 'OUTPUT_OUTSIDE_AUTHORIZED_ROOT' })
+      if (direct.size > MAX_OUTPUT_FILE_BYTES) throw Object.assign(new Error('单个产物不能超过 50 MB'), { code: 'OUTPUT_TOO_LARGE' })
+      totalBytes += direct.size
+      if (totalBytes > MAX_OUTPUT_TOTAL_BYTES) throw Object.assign(new Error('本次登记的产物总计不能超过 250 MB'), { code: 'OUTPUT_TOTAL_TOO_LARGE' })
+      const data = await readFile(canonical)
+      const sha256 = createHash('sha256').update(data).digest('hex')
+      const duplicate = existing.find((artifact: any) => artifact.sha256 === sha256 && parseJson(artifact.metadata_json, {}) && String((parseJson(artifact.metadata_json, {}) as any).sourcePath ?? '') === canonical)
+      if (duplicate) {
+        registered.push({ ...this.publicArtifactRef(duplicate), path: canonical, deduplicated: true })
+        continue
+      }
+      const artifact = await this.artifacts.putBuffer({
+        runId,
+        name: output.label?.trim() || basename(canonical),
+        kind: 'final_output',
+        data,
+        metadata: { sourcePath: canonical, sha256, registeredBy: 'output_register' },
+      })
+      registered.push({ ...this.publicArtifactRef(artifact), path: canonical, deduplicated: false })
+    }
+    return { registered: registered.length, outputs: registered }
   }
 
   private emitTool(runId: string, call: ToolCall, status: ToolCall['status'], riskLevel: any): void {
