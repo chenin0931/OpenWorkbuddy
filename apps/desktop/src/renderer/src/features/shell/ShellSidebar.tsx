@@ -59,7 +59,7 @@ export function ShellSidebar({
       <div className="titlebar-drag sidebar-titlebar" aria-hidden="true" />
       <div className="brand-row">
         <div className="brand-mark"><BrandMark size={20} /></div>
-        <div className="brand-copy"><strong>On My WorkBuddy</strong><span>本地工作助手</span></div>
+        <div className="brand-copy"><strong>OpenWorkbuddy</strong><span>本地工作助手</span></div>
         <IconButton icon="panelRight" label="隐藏侧栏" onClick={onHide} />
       </div>
 

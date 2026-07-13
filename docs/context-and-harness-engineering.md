@@ -1,6 +1,6 @@
 # Context Engineering and Harness Engineering
 
-On My WorkBuddy treats the model as a reasoning component, not as the product's
+OpenWorkbuddy treats the model as a reasoning component, not as the product's
 authority or durable state store. Two engineering systems turn that component
 into a usable desktop Agent:
 
@@ -97,7 +97,7 @@ the model a consistent trust boundary.
 ### Progressive capability loading
 
 Large tool and Skill catalogs create three problems: token cost, overlapping
-semantics and worse tool selection. On My WorkBuddy therefore separates
+semantics and worse tool selection. OpenWorkbuddy therefore separates
 discovery from full loading.
 
 For Skills:

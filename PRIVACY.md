@@ -2,7 +2,7 @@
 
 Last updated: 2026-07-13
 
-On My WorkBuddy is a local-first desktop application. It does not require a
+OpenWorkbuddy is a local-first desktop application. It does not require a
 developer-operated account and does not provide developer-operated cloud sync,
 analytics or telemetry.
 
@@ -55,5 +55,5 @@ Support data through macOS. High-risk and external-side-effect actions are
 presented for approval according to the app's policy.
 
 Privacy questions and corrections can be submitted at
-https://github.com/chenin0931/Openworkbuddy/issues. Please do not include API
+https://github.com/chenin0931/OpenWorkbuddy/issues. Please do not include API
 keys, private files or sensitive page content in a public issue.

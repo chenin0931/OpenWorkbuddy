@@ -67,7 +67,7 @@ interface PendingFlow {
 }
 
 const CLIENT_METADATA: OAuthClientMetadata = {
-  client_name: 'On My WorkBuddy',
+  client_name: 'OpenWorkbuddy',
   redirect_uris: [MCP_OAUTH_CALLBACK_URL],
   grant_types: ['authorization_code', 'refresh_token'],
   response_types: ['code'],

@@ -1,4 +1,4 @@
-# On My WorkBuddy Chrome Bridge
+# OpenWorkbuddy Chrome Bridge
 
 This Manifest V3 extension connects only a tab that the user explicitly selects by clicking the extension action. The desktop process cannot bind an arbitrary existing tab. Tabs created by the agent's `openTab` command, or immediately produced by an agent click, inherit that tab's grant; unrelated popups and all other browser tabs remain invisible to `tabs.list` and inaccessible to CDP commands.
 

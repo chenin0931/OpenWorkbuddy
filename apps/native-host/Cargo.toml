@@ -3,7 +3,7 @@ name = "on-my-workbuddy-native-host"
 version = "0.3.0"
 edition = "2021"
 license = "MIT"
-description = "Native Messaging bridge between Chrome and the local On My WorkBuddy Unix socket"
+description = "Native Messaging bridge between Chrome and the local OpenWorkbuddy Unix socket"
 
 [dependencies]
 serde_json = "1.0"

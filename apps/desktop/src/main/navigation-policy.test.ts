@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest'
 import { createRendererNavigationPolicy, isRendererNavigationAllowed } from './navigation-policy'
 
 describe('renderer navigation policy', () => {
-  const entry = join('/Applications', 'On My WorkBuddy.app', 'Contents', 'Resources', 'app.asar', 'dist', 'renderer', 'index.html')
+  const entry = join('/Applications', 'OpenWorkbuddy.app', 'Contents', 'Resources', 'app.asar', 'dist', 'renderer', 'index.html')
 
   it('allows only the exact packaged entry URL, not another opaque file origin', () => {
     const policy = createRendererNavigationPolicy(entry)

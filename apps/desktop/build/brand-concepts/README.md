@@ -1,14 +1,14 @@
 # Quiet Workbench brand concepts
 
 These two raster concepts were generated with Codex built-in image generation on
-2026-07-12 to explore the `On My WorkBuddy` app-icon direction. They are design
+2026-07-12 to explore the `OpenWorkbuddy` app-icon direction. They are design
 references, not small UI glyphs.
 
 ## Concept prompts
 
 ### `quiet-workbench-light.png`
 
-> Create a premium macOS productivity app icon for “On My WorkBuddy”. Use an
+> Create a premium macOS productivity app icon for “OpenWorkbuddy”. Use an
 > abstract folded work surface that clearly forms a W, with deep cobalt blue,
 > graphite and warm ivory surfaces plus one small amber control node representing
 > human approval. Quiet, precise, trustworthy and tactile; restrained depth and
@@ -17,7 +17,7 @@ references, not small UI glyphs.
 
 ### `quiet-workbench-dark.png`
 
-> Create a flatter alternate premium macOS app icon for “On My WorkBuddy”. A
+> Create a flatter alternate premium macOS app icon for “OpenWorkbuddy”. A
 > folded ribbon/workbench surface forms a clear W on a graphite field, using
 > ivory and deep cobalt planes with one warm amber control node. Mature,
 > geometric, highly legible at Dock size, restrained depth, no text and no AI

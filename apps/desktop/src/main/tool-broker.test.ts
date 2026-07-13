@@ -234,18 +234,18 @@ describe('ToolBroker capability enforcement', () => {
       requestId: 'search-request',
       toolCallId: 'search-approval',
       toolId: 'web_search',
-      args: { query: 'On My WorkBuddy', maxResults: 5 },
+      args: { query: 'OpenWorkbuddy', maxResults: 5 },
     })
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(runnerCalls).toHaveLength(0)
     expect(database.toolRows[0]).toMatchObject({ tool_id: 'web_search', state: 'waiting_approval' })
     const approval = fixture.events.find((event) => event.kind === 'approval.requested')?.approval
-    expect(approval).toMatchObject({ target: 'On My WorkBuddy', sendsData: ['工具参数可能发送到外部系统'] })
+    expect(approval).toMatchObject({ target: 'OpenWorkbuddy', sendsData: ['工具参数可能发送到外部系统'] })
 
     fixture.broker.respondToApproval({ requestId: approval.id, decision: 'approve', scope: 'once' })
-    await expect(pending).resolves.toMatchObject({ engine: 'bing-html', query: 'On My WorkBuddy' })
+    await expect(pending).resolves.toMatchObject({ engine: 'bing-html', query: 'OpenWorkbuddy' })
     expect(runnerCalls).toHaveLength(1)
-    expect(runnerCalls[0]).toMatchObject({ toolId: 'web.search', args: { query: 'On My WorkBuddy', maxResults: 5 } })
+    expect(runnerCalls[0]).toMatchObject({ toolId: 'web.search', args: { query: 'OpenWorkbuddy', maxResults: 5 } })
   })
 
   it('keeps fetched page text out of the persisted tool receipt', async () => {

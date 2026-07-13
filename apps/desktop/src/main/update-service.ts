@@ -49,7 +49,7 @@ export function configureAutoUpdates(notify: (title: string, body: string) => vo
   autoUpdater.setFeedURL({ url: eligibility.feedUrl })
   autoUpdater.on('error', (error) => console.warn('Auto update check failed', error))
   autoUpdater.on('update-downloaded', (_event, _releaseNotes, releaseName) => {
-    notify('On My WorkBuddy 更新已下载', `${releaseName || '新版本'}将在退出应用后安装。`)
+    notify('OpenWorkbuddy 更新已下载', `${releaseName || '新版本'}将在退出应用后安装。`)
   })
   const check = (): void => {
     try { autoUpdater.checkForUpdates() } catch (error) { console.warn('Auto update check failed', error) }

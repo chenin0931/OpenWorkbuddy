@@ -2,7 +2,7 @@
   "name": "@onmyworkbuddy/desktop",
   "version": "0.3.0",
   "description": "A local-first macOS desktop agent with auditable tools, approvals, memory and automation.",
-  "author": "On My WorkBuddy",
+  "author": "OpenWorkbuddy",
   "license": "MIT",
   "private": true,
   "workbuddyUpdateFeed": "",
@@ -54,7 +54,7 @@
   },
   "build": {
     "appId": "com.onmyworkbuddy.desktop",
-    "productName": "On My WorkBuddy",
+    "productName": "OpenWorkbuddy",
     "asar": true,
     "asarUnpack": [
       "**/*.node"
@@ -68,7 +68,7 @@
     ],
     "protocols": [
       {
-        "name": "On My WorkBuddy MCP OAuth",
+        "name": "OpenWorkbuddy MCP OAuth",
         "schemes": [
           "onmyworkbuddy"
         ]
@@ -120,7 +120,7 @@
       "gatekeeperAssess": false
     },
     "dmg": {
-      "title": "On My WorkBuddy ${version}"
+      "title": "OpenWorkbuddy ${version}"
     }
   }
 }

@@ -103,7 +103,7 @@ pub fn socket_path_from(override_path: Option<&Path>, home: Option<&Path>) -> io
             "HOME is not set and ON_MY_WORKBUDDY_SOCKET was not provided",
         )
     })?;
-    Ok(home.join("Library/Application Support/On My WorkBuddy/chrome.sock"))
+    Ok(home.join("Library/Application Support/OpenWorkbuddy/chrome.sock"))
 }
 
 #[cfg(test)]
@@ -148,7 +148,7 @@ mod tests {
         );
         assert_eq!(
             socket_path_from(None, Some(Path::new("/Users/example"))).unwrap(),
-            PathBuf::from("/Users/example/Library/Application Support/On My WorkBuddy/chrome.sock")
+            PathBuf::from("/Users/example/Library/Application Support/OpenWorkbuddy/chrome.sock")
         );
     }
 

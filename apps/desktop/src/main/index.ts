@@ -14,8 +14,9 @@ import { AutomationService } from './automation-service'
 import { IpcApi } from './ipc-api'
 import { McpOAuthService, type McpOAuthStoredSecret } from './mcp-oauth'
 import { createRendererNavigationPolicy, isRendererNavigationAllowed } from './navigation-policy'
+import { migrateLegacyBrandDirectory } from './brand-migration'
 
-app.setName('On My WorkBuddy')
+app.setName('OpenWorkbuddy')
 const hasLock = app.requestSingleInstanceLock()
 if (!hasLock) app.quit()
 
@@ -55,7 +56,7 @@ function createWindow(): BrowserWindow {
     height: 900,
     minWidth: 1040,
     minHeight: 680,
-    title: 'On My WorkBuddy',
+    title: 'OpenWorkbuddy',
     titleBarStyle: 'hiddenInset',
     trafficLightPosition: { x: 16, y: 16 },
     backgroundColor: '#f6f7f9',
@@ -89,9 +90,13 @@ function createWindow(): BrowserWindow {
 }
 
 async function initialize(): Promise<void> {
+  const userData = app.getPath('userData')
+  if (process.platform === 'darwin') {
+    const migration = await migrateLegacyBrandDirectory(app.getPath('appData'), userData)
+    if (migration.migrated) console.info('Migrated preview data to the OpenWorkbuddy application directory.')
+  }
   session.defaultSession.setPermissionCheckHandler(() => false)
   session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false))
-  const userData = app.getPath('userData')
   const database = new AppDatabase(join(userData, 'workbuddy.sqlite3'))
   const startupRecovery = database.recoverInterruptedWork()
   const storedSettings = database.getSetting<any>('appSettings', {})
@@ -145,7 +150,7 @@ async function initialize(): Promise<void> {
   const workerFailureHandler = (_event: Electron.Event, details: Electron.Details): void => {
     const name = String(details.serviceName ?? details.name ?? '')
     if (quitting || details.type !== 'Utility' || details.reason === 'clean-exit') return
-    if (!name.includes('On My WorkBuddy agent-host') && !name.includes('On My WorkBuddy tool-runner')) return
+    if (!name.includes('OpenWorkbuddy agent-host') && !name.includes('OpenWorkbuddy tool-runner')) return
     // Stopping the surviving peer can emit a second child-process-gone event.
     // A short suppression window makes the pair one recovery incident.
     if (Date.now() - lastWorkerRecoveryAt < 1_000) return
@@ -187,9 +192,9 @@ async function initialize(): Promise<void> {
 
   mainWindow = createWindow()
   tray = new Tray(trayIcon())
-  tray.setToolTip('On My WorkBuddy')
+  tray.setToolTip('OpenWorkbuddy')
   tray.setContextMenu(Menu.buildFromTemplate([
-    { label: '打开 On My WorkBuddy', click: showWindow },
+    { label: '打开 OpenWorkbuddy', click: showWindow },
     { type: 'separator' },
     { label: '退出', click: () => { quitting = true; app.quit() } },
   ]))
@@ -202,7 +207,7 @@ async function initialize(): Promise<void> {
 }
 
 app.whenReady().then(initialize).catch((error) => {
-  dialogError('On My WorkBuddy 启动失败', error)
+  dialogError('OpenWorkbuddy 启动失败', error)
   app.quit()
 })
 

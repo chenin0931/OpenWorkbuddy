@@ -30,7 +30,7 @@ async function installMockBridge(page: Page, onboarding: boolean, failModelSecre
       createdAt: now, updatedAt: now,
     })
     const bootstrap = () => ({
-      app: { name: 'On My WorkBuddy', version: '0.3.0', platform: 'darwin', arch: 'x64', locale: 'zh-CN' },
+      app: { name: 'OpenWorkbuddy', version: '0.3.0', platform: 'darwin', arch: 'x64', locale: 'zh-CN' },
       onboardingComplete: state.onboardingDone,
       settings: { onboardingCompleted: state.onboardingDone, theme: themeMode, locale: 'zh-CN', memoryEnabled: true, timezone: 'Asia/Shanghai' },
       workspaces: state.workspaceAdded ? [workspace] : [],
@@ -90,19 +90,19 @@ async function installMockBridge(page: Page, onboarding: boolean, failModelSecre
           ],
           messages: statusUxMode ? [
             { id: 'status-message-user', role: 'user', title: '你', content: '请回答这个普通问题。', actor: 'user', createdAt: '2026-07-10T16:50:00.000Z' },
-            { id: 'status-message-assistant', role: 'assistant', title: 'On My WorkBuddy', content: '这是本轮对话的回答。', actor: 'assistant', createdAt: '2026-07-10T16:50:01.000Z' },
+            { id: 'status-message-assistant', role: 'assistant', title: 'OpenWorkbuddy', content: '这是本轮对话的回答。', actor: 'assistant', createdAt: '2026-07-10T16:50:01.000Z' },
           ] : turnGroupingRegressionMode ? [
             { id: 'turn-message-user-1', role: 'user', title: '你', content: '联网搜下今天新闻呢', actor: 'user', createdAt: '2026-07-10T16:50:00.000Z' },
-            { id: 'turn-message-assistant-1', role: 'assistant', title: 'On My WorkBuddy', content: '好的，我来搜索一下今天的新闻。', actor: 'assistant', createdAt: '2026-07-10T16:50:01.000Z' },
-            { id: 'turn-message-assistant-2', role: 'assistant', title: 'On My WorkBuddy', content: '第一次检索没有得到足够结果，我又抓取了新闻原文并完成整理。', actor: 'assistant', createdAt: '2026-07-10T16:50:04.000Z' },
+            { id: 'turn-message-assistant-1', role: 'assistant', title: 'OpenWorkbuddy', content: '好的，我来搜索一下今天的新闻。', actor: 'assistant', createdAt: '2026-07-10T16:50:01.000Z' },
+            { id: 'turn-message-assistant-2', role: 'assistant', title: 'OpenWorkbuddy', content: '第一次检索没有得到足够结果，我又抓取了新闻原文并完成整理。', actor: 'assistant', createdAt: '2026-07-10T16:50:04.000Z' },
             { id: 'turn-message-user-2', role: 'user', title: '你', content: '那换个关键词再试一次', actor: 'user', createdAt: '2026-07-10T16:50:05.000Z' },
-            { id: 'turn-message-assistant-3', role: 'assistant', title: 'On My WorkBuddy', content: '可以，我会按新关键词重新搜索。', actor: 'assistant', createdAt: '2026-07-10T16:50:06.000Z' },
+            { id: 'turn-message-assistant-3', role: 'assistant', title: 'OpenWorkbuddy', content: '可以，我会按新关键词重新搜索。', actor: 'assistant', createdAt: '2026-07-10T16:50:06.000Z' },
           ] : [
             { id: 'message-1', role: 'user', title: '你', content: '请完成安全验收。', actor: 'user', createdAt: now },
             ...(presentationMode ? [
-              { id: 'message-empty', role: 'assistant', title: 'On My WorkBuddy', content: '', actor: 'assistant', createdAt: now },
-              { id: 'message-2', role: 'assistant', title: 'On My WorkBuddy', content: '## 国内要闻\n\n- **重点新闻**：已读取原文并整理。\n- [查看来源](https://example.com/news)', actor: 'assistant', createdAt: now },
-            ] : [{ id: 'message-2', role: 'assistant', title: 'On My WorkBuddy', content: timelineRegressionMode ? '我会先读取工作区，再汇总结果。' : '需要运行构建验证，因此先请求授权。', actor: 'assistant', createdAt: '2026-07-10T16:50:01.000Z' }]),
+              { id: 'message-empty', role: 'assistant', title: 'OpenWorkbuddy', content: '', actor: 'assistant', createdAt: now },
+              { id: 'message-2', role: 'assistant', title: 'OpenWorkbuddy', content: '## 国内要闻\n\n- **重点新闻**：已读取原文并整理。\n- [查看来源](https://example.com/news)', actor: 'assistant', createdAt: now },
+            ] : [{ id: 'message-2', role: 'assistant', title: 'OpenWorkbuddy', content: timelineRegressionMode ? '我会先读取工作区，再汇总结果。' : '需要运行构建验证，因此先请求授权。', actor: 'assistant', createdAt: '2026-07-10T16:50:01.000Z' }]),
             ...(timelineRegressionMode && state.followUpContent ? [{ id: 'message-follow-up', role: 'user', title: '你', content: state.followUpContent, actor: 'user', createdAt: '2026-07-10T16:50:03.000Z' }] : []),
           ],
           pendingApprovals: state.approvalPending ? [{ id: 'approval-1', runId: 'run-1', toolCallId: 'tool-1', toolName: 'shell_run', riskLevel: 'reversible_write', title: '运行项目验证命令', reason: '构建会写入缓存', target: 'pnpm test', arguments: { command: 'pnpm test' }, sendsData: [], reversible: true, status: 'pending', createdAt: now }] : [],
@@ -152,7 +152,7 @@ async function installMockBridge(page: Page, onboarding: boolean, failModelSecre
 test('首次启动完成模型、工作区和执行边界配置', async ({ page }) => {
   await installMockBridge(page, true)
   await page.goto('/')
-  const onboarding = page.getByRole('dialog', { name: '欢迎使用 On My WorkBuddy' })
+  const onboarding = page.getByRole('dialog', { name: '欢迎使用 OpenWorkbuddy' })
   await expect(onboarding).toBeVisible()
   await onboarding.getByRole('button', { name: '开始设置' }).click()
   await onboarding.getByRole('button', { name: /Kimi \/ Moonshot/ }).click()

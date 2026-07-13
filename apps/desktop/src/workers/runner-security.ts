@@ -229,7 +229,7 @@ export function pinnedHttpRequest(url: URL, address: string, maxBytes = MAX_PUBL
       path: `${url.pathname}${url.search}`,
       headers: {
         host: url.host,
-        'user-agent': 'OnMyWorkBuddy/0.3.0',
+        'user-agent': 'OpenWorkbuddy/0.3.0',
         accept: 'text/plain,text/html,application/json;q=0.9,*/*;q=0.1',
         connection: 'close',
       },

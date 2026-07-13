@@ -1,6 +1,6 @@
 # Kimi K2.7 Code 接入说明
 
-On My WorkBuddy 将 Kimi 作为独立 Provider `moonshotai-cn` 接入，默认模型为 `kimi-k2.7-code`。它使用 Moonshot 官方中国区 API `https://api.moonshot.cn/v1`，不允许用户把该 Profile 指向任意 OpenAI-compatible 地址。
+OpenWorkbuddy 将 Kimi 作为独立 Provider `moonshotai-cn` 接入，默认模型为 `kimi-k2.7-code`。它使用 Moonshot 官方中国区 API `https://api.moonshot.cn/v1`，不允许用户把该 Profile 指向任意 OpenAI-compatible 地址。
 
 ## 运行边界
 

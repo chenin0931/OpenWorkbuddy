@@ -357,7 +357,7 @@ export class IpcApi {
     }
   }
 
-  private appInfo() { return { name: 'On My WorkBuddy', version: app.getVersion(), platform: process.platform, arch: process.arch, locale: app.getLocale() || 'zh-CN' } }
+  private appInfo() { return { name: 'OpenWorkbuddy', version: app.getVersion(), platform: process.platform, arch: process.arch, locale: app.getLocale() || 'zh-CN' } }
   async completeOAuthCallback(callbackUrl: string): Promise<void> {
     const state = new URL(callbackUrl).searchParams.get('state')
     if (!state) throw new Error('OAuth 回调缺少 state')

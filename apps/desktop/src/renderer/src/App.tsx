@@ -245,9 +245,9 @@ function Onboarding({
   }
   return (
     <div className="onboarding-backdrop">
-      <section className="onboarding-card" role="dialog" aria-modal="true" aria-label="欢迎使用 On My WorkBuddy">
+      <section className="onboarding-card" role="dialog" aria-modal="true" aria-label="欢迎使用 OpenWorkbuddy">
         <div className="onboarding-side">
-          <div className="onboarding-brand"><div className="brand-mark"><BrandMark size={19} /></div><strong>On My WorkBuddy</strong></div>
+          <div className="onboarding-brand"><div className="brand-mark"><BrandMark size={19} /></div><strong>OpenWorkbuddy</strong></div>
           <div className="setup-steps">
             {[['activity', '欢迎'], ['key', '连接模型'], ['folder', '授权工作区'], ['globe', '浏览器连接'], ['shield', '执行边界']].map(([icon, label], index) => {
               const indexStep = index
@@ -358,7 +358,7 @@ export default function App() {
   }
 
   if (loading) return (
-    <div className="boot-screen"><div className="boot-logo"><BrandMark size={25} /></div><strong>On My WorkBuddy</strong><Spinner /><span>正在恢复本地工作台…</span></div>
+    <div className="boot-screen"><div className="boot-logo"><BrandMark size={25} /></div><strong>OpenWorkbuddy</strong><Spinner /><span>正在恢复本地工作台…</span></div>
   )
 
   if (error && snapshot.workspaces.length === 0 && snapshot.models.length === 0) return (

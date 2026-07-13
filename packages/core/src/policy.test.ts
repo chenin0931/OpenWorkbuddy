@@ -62,7 +62,7 @@ describe('risk policy', () => {
 
   it('requires approval before sending a search query off-device', () => {
     expect(
-      classifyToolRisk(call('web.search', { query: 'On My WorkBuddy' }), descriptor('web.search')),
+      classifyToolRisk(call('web.search', { query: 'OpenWorkbuddy' }), descriptor('web.search')),
     ).toMatchObject({
       riskLevel: 'external_side_effect',
       ruleId: 'network.search-with-outgoing-query',
@@ -70,7 +70,7 @@ describe('risk policy', () => {
       idempotent: true,
       sendsDataOffDevice: true,
     })
-    expect(evaluateToolPolicy({ call: call('web.search', { query: 'On My WorkBuddy' }), descriptor: descriptor('web.search') }).effect).toBe('require_approval')
+    expect(evaluateToolPolicy({ call: call('web.search', { query: 'OpenWorkbuddy' }), descriptor: descriptor('web.search') }).effect).toBe('require_approval')
   })
 
   it.each([

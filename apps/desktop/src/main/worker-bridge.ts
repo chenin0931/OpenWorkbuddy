@@ -19,7 +19,7 @@ class ManagedWorker {
     const entry = join(__dirname, `${this.entryName}.cjs`)
     if (!existsSync(entry)) throw new Error(`Worker 构建文件不存在：${entry}`)
     const child = utilityProcess.fork(entry, [], {
-      serviceName: `On My WorkBuddy ${this.entryName}`,
+      serviceName: `OpenWorkbuddy ${this.entryName}`,
       stdio: 'pipe',
       env: { LANG: process.env.LANG ?? 'zh_CN.UTF-8', PATH: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin' },
     })

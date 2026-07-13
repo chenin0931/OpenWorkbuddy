@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for helping improve On My WorkBuddy.
+Thanks for helping improve OpenWorkbuddy.
 
 ## Before opening a change
 

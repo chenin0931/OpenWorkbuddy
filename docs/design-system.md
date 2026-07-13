@@ -1,6 +1,6 @@
 # Quiet Workbench design system
 
-本文档定义 On My WorkBuddy Renderer 的视觉、交互和产品语言约束。实现来源以
+本文档定义 OpenWorkbuddy Renderer 的视觉、交互和产品语言约束。实现来源以
 `apps/desktop/src/renderer/src/design/`、`icons.tsx`、`ui.tsx` 和现有 Shell/Work
 组件为准；本文不改变 Agent Host、权限、审批或持久化语义。
 

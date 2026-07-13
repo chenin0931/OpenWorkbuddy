@@ -56,7 +56,7 @@ export function publicToolDescriptors(): Array<Omit<ToolDefinition, 'risk' | 'ru
   return TOOL_DEFINITIONS.map(({ id, label, description, parameters, executionMode }) => ({ id, label, description, parameters, ...(executionMode ? { executionMode } : {}) }))
 }
 
-export const BASE_SYSTEM_PROMPT = `你是 On My WorkBuddy，一个运行在用户 Mac 上的本地优先工作 Agent。
+export const BASE_SYSTEM_PROMPT = `你是 OpenWorkbuddy，一个运行在用户 Mac 上的本地优先工作 Agent。
 
 工作契约：
 1. 先读取现状、工作区规则和相关材料，再行动；能从环境确认的事情不要反问用户。

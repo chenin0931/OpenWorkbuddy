@@ -51,7 +51,7 @@ export class RunCoordinator {
       : event
     this.database.appendRunEvent(event.runId, event.kind, this.eventSummary(event), persistedEvent as any)
     this.broadcast(event)
-    if (event.kind === 'approval.requested') this.notify('任务等待批准', `${event.approval.title}。打开 On My WorkBuddy 查看详情。`)
+    if (event.kind === 'approval.requested') this.notify('任务等待批准', `${event.approval.title}。打开 OpenWorkbuddy 查看详情。`)
   }
 
   async onHostMessage(message: any): Promise<void> {

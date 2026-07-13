@@ -1,4 +1,4 @@
-# On My WorkBuddy 本地安装与使用
+# OpenWorkbuddy 本地安装与使用
 
 ## 当前交付形态
 
@@ -11,18 +11,18 @@
 
 ## 安装桌面应用
 
-1. 打开 DMG，把 `On My WorkBuddy.app` 拖入“应用程序”。也可以直接解压 macOS ZIP。
+1. 打开 DMG，把 `OpenWorkbuddy.app` 拖入“应用程序”。也可以直接解压 macOS ZIP。
 2. 首次打开 unsigned 本地构建时，优先在 Finder 中右键应用并选择“打开”。
 3. 如果 macOS 仍阻止启动，可在“系统设置 → 隐私与安全性”中确认打开。只在你确认包来源可信时，才在终端执行：
 
    ```bash
-   xattr -dr com.apple.quarantine "/Applications/On My WorkBuddy.app"
+   xattr -dr com.apple.quarantine "/Applications/OpenWorkbuddy.app"
    ```
 
 应用数据默认保存在：
 
 ```text
-~/Library/Application Support/On My WorkBuddy
+~/Library/Application Support/OpenWorkbuddy
 ```
 
 模型 API Key 通过 Electron `safeStorage` 加密，macOS 下由登录钥匙串保护；Key 不会暴露给 Renderer、工具环境、模型上下文或诊断包。
@@ -50,18 +50,18 @@ Chrome 出于安全原因要求用户手动加载 unpacked 扩展并点击工具
 4. 保持桌面应用已安装，运行其 Native Host 安装脚本：
 
    ```bash
-   "/Applications/On My WorkBuddy.app/Contents/Resources/NativeHost/scripts/install.sh" <扩展ID>
+   "/Applications/OpenWorkbuddy.app/Contents/Resources/NativeHost/scripts/install.sh" <扩展ID>
    ```
 
-5. 重启 Chrome 和 On My WorkBuddy。
-6. 打开一个普通 `http(s)` 页面，点击 On My WorkBuddy 扩展图标，再在具体任务中选择“绑定当前标签页”。
+5. 重启 Chrome 和 OpenWorkbuddy。
+6. 打开一个普通 `http(s)` 页面，点击 OpenWorkbuddy 扩展图标，再在具体任务中选择“绑定当前标签页”。
 
 Agent 只能访问用户点击授权的根标签和由它新开的子标签；扩展不会导出 Cookie，也不会读取其他既有标签。Chrome 或 Native Host 断线时，相关任务会进入等待状态，可在重连后恢复。
 
 卸载 Native Host：
 
 ```bash
-"/Applications/On My WorkBuddy.app/Contents/Resources/NativeHost/scripts/uninstall.sh"
+"/Applications/OpenWorkbuddy.app/Contents/Resources/NativeHost/scripts/uninstall.sh"
 ```
 
 ## 权限与审批

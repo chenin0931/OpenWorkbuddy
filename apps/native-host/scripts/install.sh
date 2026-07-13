@@ -29,7 +29,7 @@ if [[ ! -x "${SOURCE_BINARY}" ]]; then
   cargo build --release --manifest-path "${PROJECT_DIR}/Cargo.toml"
 fi
 
-APP_SUPPORT="${HOME}/Library/Application Support/On My WorkBuddy"
+APP_SUPPORT="${HOME}/Library/Application Support/OpenWorkbuddy"
 INSTALL_DIR="${APP_SUPPORT}/NativeHost"
 INSTALLED_BINARY="${INSTALL_DIR}/on-my-workbuddy-native-host"
 MANIFEST_DIR="${HOME}/Library/Application Support/Google/Chrome/NativeMessagingHosts"

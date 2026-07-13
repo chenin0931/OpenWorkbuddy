@@ -6,7 +6,7 @@ Status: accepted for v0.1
 
 Use `@earendil-works/pi-agent-core` and `@earendil-works/pi-ai` 0.80.6 for the stateful model/tool loop, streaming events, steering, cancellation and provider abstraction.
 
-Keep the following in On My WorkBuddy's own Electron main-process Harness:
+Keep the following in OpenWorkbuddy's own Electron main-process Harness:
 
 - model profile snapshots and encrypted credentials;
 - policy classification, approval grants and non-replay rules;

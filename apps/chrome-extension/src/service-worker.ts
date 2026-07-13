@@ -227,7 +227,7 @@ async function bindLatestGrant(params: Record<string, unknown>): Promise<unknown
   const taskId = requiredString(params, 'taskId', 200)
   const grantId = requestedGrantId ?? latestGrantId
   if (!grantId) {
-    throw new ProtocolError('USER_GESTURE_REQUIRED', 'Click the On My WorkBuddy extension icon on the tab first.')
+    throw new ProtocolError('USER_GESTURE_REQUIRED', 'Click the OpenWorkbuddy extension icon on the tab first.')
   }
   const grant = grants.get(grantId)
   if (!grant) throw new ProtocolError('GRANT_NOT_FOUND', 'The selected tab grant no longer exists.')

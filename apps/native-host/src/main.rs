@@ -10,7 +10,7 @@ use std::thread;
 
 fn main() {
     if let Err(error) = run() {
-        eprintln!("On My WorkBuddy native host stopped: {error}");
+        eprintln!("OpenWorkbuddy native host stopped: {error}");
         std::process::exit(1);
     }
 }
@@ -80,7 +80,7 @@ fn run() -> io::Result<()> {
                     &chrome_stdout,
                     None,
                     "DESKTOP_DISCONNECTED",
-                    "The On My WorkBuddy desktop socket closed.",
+                    "The OpenWorkbuddy desktop socket closed.",
                     true,
                 )?;
                 break;
@@ -107,7 +107,7 @@ fn run() -> io::Result<()> {
 fn run_disconnected(connect_error: io::Error, socket_display: &str) -> io::Result<()> {
     let stdout = Arc::new(Mutex::new(io::stdout()));
     let message = format!(
-        "Could not connect to the On My WorkBuddy socket at {socket_display}: {connect_error}"
+        "Could not connect to the OpenWorkbuddy socket at {socket_display}: {connect_error}"
     );
 
     emit_bridge_error(&stdout, None, "DESKTOP_UNAVAILABLE", message.clone(), true)?;

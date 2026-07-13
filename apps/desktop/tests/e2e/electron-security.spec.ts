@@ -14,7 +14,7 @@ test('真实 Electron 窗口通过 preload 暴露具名 IPC，且 Renderer 没�
   })
   try {
     const window = await application.firstWindow()
-    await expect(window).toHaveTitle(/On My WorkBuddy/)
+    await expect(window).toHaveTitle(/OpenWorkbuddy/)
     const boundary = await window.evaluate(async () => {
       const api = (globalThis as typeof globalThis & { workbuddy?: { apiVersion: number; app: { getInfo(): Promise<unknown> }; bootstrap(): Promise<unknown> } }).workbuddy
       return {
@@ -27,7 +27,7 @@ test('真实 Electron 窗口通过 preload 暴露具名 IPC，且 Renderer 没�
       }
     })
     expect(boundary).toMatchObject({ hasRequire: false, hasProcess: false, apiVersion: 1 })
-    expect(boundary.info).toMatchObject({ name: 'On My WorkBuddy', platform: 'darwin' })
+    expect(boundary.info).toMatchObject({ name: 'OpenWorkbuddy', platform: 'darwin' })
     expect(boundary.bootstrap).toBeTruthy()
     expect(boundary.csp).toContain("script-src 'self'")
   } finally {

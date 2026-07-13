@@ -195,7 +195,7 @@ export function WorkTimeline({ detail, approvals, onOpenDetails, onOpenChanges }
             <article className="message agent-message agent-turn">
               <div className="message-avatar agent"><BrandMark size={17} /></div>
               <div className="message-content">
-                <div className="message-meta"><strong>On My WorkBuddy</strong><span>{formatTime(turn.response.updatedAt ?? turn.updatedAt)}</span></div>
+                <div className="message-meta"><strong>OpenWorkbuddy</strong><span>{formatTime(turn.response.updatedAt ?? turn.updatedAt)}</span></div>
                 <div className="agent-turn-entries">
                   {turn.response.content && <div className="agent-turn-text"><Markdown>{turn.response.content}</Markdown></div>}
                   <ActivityDisclosure groups={turn.activity} />

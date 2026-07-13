@@ -1,6 +1,6 @@
 # Architecture
 
-On My WorkBuddy 使用四个运行边界：沙箱化 Renderer、Electron Main 权限代理、Agent Host、Tool Runner。Chrome 通过单独扩展和 Native Messaging 连接。
+OpenWorkbuddy 使用四个运行边界：沙箱化 Renderer、Electron Main 权限代理、Agent Host、Tool Runner。Chrome 通过单独扩展和 Native Messaging 连接。
 
 所有模型建议的外部动作都先成为 `ToolCall`，再由 Main 进程执行策略判断、等待审批、委托 Runner，并把可观察结果送回 Agent Host。模型不能直接批准自己的动作。
 

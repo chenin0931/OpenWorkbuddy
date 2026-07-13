@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- 将全部公开品牌文案统一为 `OpenWorkbuddy`，覆盖桌面应用、Chrome Bridge、MCP OAuth、通知、文档与测试。
+- 首次启动新版时自动迁移预览版的 macOS Application Support 数据目录，并保留 Native Messaging Host 兼容链接。
+
 ## 0.3.0 — 2026-07-12
 
 - 将桌面端重构为 “Quiet Workbench / 安静的工作台”：统一暖灰、石墨与深钴蓝设计 Token、排版、间距、圆角和浮层阴影，恢复原生 macOS 标题栏。
@@ -48,7 +53,7 @@
 - 新增持久化工具回执、网页证据和审批历史；应用重启后仍可审查 Search/Fetch 来源。
 - 重构右侧检查器为概览、证据、活动和产物，明确区分“搜索发现”“已读取原文”和“已验证”。
 - 按页面声明的 charset 解码 GBK/GB2312 等中文网页，并阻止网页正文或大型预览进入 Renderer 公共投影。
-- 统一 `On My WorkBuddy` 品牌文案，改善次要文字对比度和窄窗口布局。
+- 统一 `OpenWorkbuddy` 品牌文案，改善次要文字对比度和窄窗口布局。
 
 ## 0.2.1 — 2026-07-11
 

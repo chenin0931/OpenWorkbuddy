@@ -1,6 +1,6 @@
 # Third-party notices
 
-On My WorkBuddy is released under the MIT License. It depends on third-party
+OpenWorkbuddy is released under the MIT License. It depends on third-party
 open-source software that remains under its respective license.
 
 Key runtime dependencies include:

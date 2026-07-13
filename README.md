@@ -1,6 +1,6 @@
-# On My WorkBuddy
+# OpenWorkbuddy
 
-On My WorkBuddy is a local-first macOS desktop agent for real work: files,
+OpenWorkbuddy is a local-first macOS desktop agent for real work: files,
 Shell, the web, an existing Chrome session, MCP, Skills, Memory and scheduled
 automations. It is designed as a recoverable workbench with explicit permission
 boundaries rather than a chat wrapper.
@@ -53,7 +53,7 @@ Electron Main / product Harness
 
 The Agent Loop uses MIT-licensed `@earendil-works/pi-agent-core` and
 `@earendil-works/pi-ai` for model streaming, tool turns, steering, cancellation
-and provider abstraction. On My WorkBuddy keeps credentials, permissions,
+and provider abstraction. OpenWorkbuddy keeps credentials, permissions,
 approval grants, state, tools and recovery in its own Harness. Pi is not treated
 as a security boundary.
 
