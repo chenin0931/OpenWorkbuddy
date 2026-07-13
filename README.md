@@ -58,6 +58,7 @@ approval grants, state, tools and recovery in its own Harness. Pi is not treated
 as a security boundary.
 
 Read [the architecture overview](docs/architecture.md),
+[the Context and Harness Engineering design](docs/context-and-harness-engineering.md),
 [the Pi decision record](docs/adr-001-pi-agent-core.md) and
 [the security model](docs/security.md) for the detailed boundaries.
 
