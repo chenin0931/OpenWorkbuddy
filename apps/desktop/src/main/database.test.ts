@@ -395,4 +395,20 @@ describe('AppDatabase persistence boundary', () => {
     })
     database.close()
   })
+
+  it('merges repeated plans without invalidating step ids or completed evidence', async () => {
+    const { database } = await temporaryDatabase()
+    const run = database.createRun({ title: 'Stable plan', prompt: 'Research and write' })
+    const first = database.replaceSteps(run.id, [{ title: 'Collect sources' }, { title: 'Write report' }])
+    database.updateTaskStep(run.id, first[0].id, { status: 'in_progress' })
+    database.updateTaskStep(run.id, first[0].id, { status: 'completed', evidence: '11 primary pages fetched' })
+
+    const merged = database.replaceSteps(run.id, [{ title: '  collect   sources ' }, { title: 'Verify report' }])
+    expect(merged).toHaveLength(3)
+    expect(merged[0]).toMatchObject({ id: first[0].id, status: 'completed', verification: '11 primary pages fetched' })
+    expect(merged[1]).toMatchObject({ title: 'Verify report', status: 'pending' })
+    expect(merged[2]).toMatchObject({ id: first[1].id, title: 'Write report', status: 'pending' })
+    expect(database.getRun(run.id)?.steps[0]).toMatchObject({ id: first[0].id, status: 'completed' })
+    database.close()
+  })
 })

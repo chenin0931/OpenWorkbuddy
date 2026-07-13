@@ -572,19 +572,47 @@ export class AppDatabase {
   }
 
   replaceSteps(runId: string, steps: Array<{ title: string; status?: string }>): any[] {
-    const created: any[] = []
+    const normalizeTitle = (title: string): string => title.normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase()
+    const merged: any[] = []
     this.db.transaction(() => {
-      this.db.prepare('DELETE FROM task_steps WHERE run_id=?').run(runId)
-      const statement = this.db.prepare('INSERT INTO task_steps(id,run_id,title,status,ordinal,created_at,updated_at) VALUES(?,?,?,?,?,?,?)')
-      steps.forEach((step, index) => {
-        const id = randomUUID()
+      const existing = this.db.prepare('SELECT * FROM task_steps WHERE run_id=? ORDER BY ordinal ASC').all(runId) as any[]
+      const byTitle = new Map(existing.map((row) => [normalizeTitle(String(row.title)), row]))
+      const selected = new Set<string>()
+      const ordered: any[] = []
+      for (const step of steps) {
+        const title = String(step.title).trim()
+        const key = normalizeTitle(title)
+        if (!key || selected.has(key)) continue
+        selected.add(key)
+        const current = byTitle.get(key)
+        if (current) {
+          ordered.push(current)
+          continue
+        }
         const timestamp = now()
-        const status = step.status ?? 'pending'
-        statement.run(id, runId, step.title, status, index, timestamp, timestamp)
-        created.push({ id, runId, title: step.title, status, ordinal: index, createdAt: timestamp, updatedAt: timestamp })
+        const created = {
+          id: randomUUID(), run_id: runId, title, status: step.status ?? 'pending',
+          evidence_json: '[]', created_at: timestamp, updated_at: timestamp,
+        }
+        this.db.prepare('INSERT INTO task_steps(id,run_id,title,status,ordinal,evidence_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)')
+          .run(created.id, runId, title, created.status, ordered.length, '[]', timestamp, timestamp)
+        ordered.push(created)
+      }
+      // Never silently delete work. Steps omitted from a later plan stay
+      // addressable until the agent explicitly completes or skips them.
+      ordered.push(...existing.filter((row) => !selected.has(normalizeTitle(String(row.title)))))
+      const updateOrdinal = this.db.prepare('UPDATE task_steps SET ordinal=?,updated_at=? WHERE id=? AND run_id=?')
+      ordered.forEach((row, ordinal) => {
+        if (Number(row.ordinal) !== ordinal) updateOrdinal.run(ordinal, now(), row.id, runId)
+        const evidence = parse<string[]>(row.evidence_json, [])
+        merged.push({
+          id: row.id, runId, title: row.title, status: row.status, ordinal,
+          ...(evidence.length > 0 ? { verification: evidence.join('\n') } : {}),
+          createdAt: row.created_at, updatedAt: row.updated_at,
+        })
       })
     })()
-    return created
+    return merged
   }
 
   updateTaskStep(runId: string, stepId: string, patch: { status: TaskStepStatus; evidence?: string }): any {

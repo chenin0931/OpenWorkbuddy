@@ -218,7 +218,7 @@ async function startRun(command: StartCommand): Promise<void> {
   const reservedContextTokens = Math.ceil(Buffer.byteLength(`${command.systemPrompt}${capabilityCatalog}${JSON.stringify(command.tools)}`, 'utf8') / 4)
   let turns = 0
   let budgetExhausted = false
-  let lastCheckpointSignature = ''
+  let checkpointState: import('./context-checkpoint').MessageCheckpoint | undefined
   let turnActive = false
   let lastProgressAt = 0
   const toolDrafts = new Map<number, { toolName?: string; generatedChars: number }>()
@@ -252,10 +252,11 @@ async function startRun(command: StartCommand): Promise<void> {
     },
     convertToLlm: toLlm,
     transformContext: async (messages) => {
-      const compacted = compactMessagesWithCheckpoint(messages, command.contextWindow ?? model.contextWindow, reservedContextTokens)
-      if (compacted.checkpoint && compacted.checkpoint.signature !== lastCheckpointSignature) {
-        lastCheckpointSignature = compacted.checkpoint.signature
-        send({ type: 'agent.event', runId: command.runId, event: { type: 'agent.checkpoint', ...compacted.checkpoint } })
+      const compacted = compactMessagesWithCheckpoint(messages, command.contextWindow ?? model.contextWindow, reservedContextTokens, checkpointState)
+      checkpointState = compacted.state ?? checkpointState
+      if (compacted.checkpoint) {
+        const { content, sourceRefs, signature, estimatedTokens } = compacted.checkpoint
+        send({ type: 'agent.event', runId: command.runId, event: { type: 'agent.checkpoint', content, sourceRefs, signature, estimatedTokens } })
       }
       return compacted.messages
     },
