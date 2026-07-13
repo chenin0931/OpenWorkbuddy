@@ -574,6 +574,14 @@ export const ApprovalHistoryEntrySchema = ApprovalRequestSchema.extend({
   resolvedAt: IsoDateTimeSchema.optional(),
 }).strict()
 
+export const RunProgressSchema = z.object({
+  phase: z.enum(['thinking', 'composing_tool', 'executing', 'verifying']),
+  message: z.string().min(1).max(500),
+  toolName: z.string().min(1).max(200).optional(),
+  generatedChars: z.number().int().nonnegative().optional(),
+  updatedAt: IsoDateTimeSchema,
+}).strict()
+
 export const RunDetailSchema = z
   .object({
     run: RunSchema,
@@ -584,6 +592,7 @@ export const RunDetailSchema = z
     approvalHistory: z.array(ApprovalHistoryEntrySchema),
     artifacts: z.array(ArtifactRefSchema),
     verification: VerificationSummarySchema.optional(),
+    progress: RunProgressSchema.optional(),
   })
   .strict()
 
@@ -597,6 +606,7 @@ export const RunEventSchema = z.discriminatedUnion('kind', [
   RunEventBaseSchema.extend({ kind: z.literal('approval.requested'), approval: ApprovalRequestSchema }).strict(),
   RunEventBaseSchema.extend({ kind: z.literal('artifact.created'), artifact: ArtifactRefSchema }).strict(),
   RunEventBaseSchema.extend({ kind: z.literal('verification.completed'), verification: VerificationSummarySchema }).strict(),
+  RunEventBaseSchema.extend({ kind: z.literal('progress.updated'), progress: RunProgressSchema }).strict(),
   RunEventBaseSchema.extend({ kind: z.literal('error'), error: PublicErrorSchema }).strict(),
 ])
 

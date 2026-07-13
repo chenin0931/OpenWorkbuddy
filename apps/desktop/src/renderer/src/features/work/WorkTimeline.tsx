@@ -3,7 +3,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { BrandMark, Icon } from '../../icons'
 import type { JsonRecord, RunDetailView, ToolActivityItem } from '../../types'
-import { buildWorkTurns, type ActivityGroup, type ResultEvidence } from '../../work-turn'
+import { buildWorkTurns, isSourceWarning, type ActivityGroup, type ResultEvidence } from '../../work-turn'
 
 interface WorkTimelineProps {
   detail: RunDetailView
@@ -14,7 +14,7 @@ interface WorkTimelineProps {
 
 const TOOL_LABELS: Record<string, string> = {
   web_search: '搜索网页', web_fetch: '读取网页', file_list: '浏览文件', file_read: '读取文件', file_search: '搜索工作区',
-  file_write: '写入文件', file_replace: '修改文件', file_delete: '移入废纸篓', shell_run: '运行命令', task_plan: '整理计划',
+  file_write: '写入文件', file_draft_start: '开始长文草稿', file_draft_append: '续写长文草稿', file_draft_commit: '提交长文草稿', file_replace: '修改文件', file_delete: '移入废纸篓', shell_run: '运行命令', task_plan: '整理计划',
   task_step_update: '更新步骤', task_complete: '完成检查', skill_read: '读取技能', memory_propose: '提出记忆', agent_delegate: '并行处理',
   chrome_tabs: '查看授权标签', chrome_snapshot: '读取网页', chrome_screenshot: '网页截图', chrome_navigate: '打开网页', chrome_click: '点击网页', chrome_type: '网页输入',
   mcp_list_tools: '发现连接能力', mcp_call_tool: '使用连接',
@@ -84,9 +84,13 @@ function diagnosticText(value: unknown): string {
 function activityHeadline(groups: ActivityGroup[]): string {
   const count = groups.reduce((sum, group) => sum + group.count, 0)
   const running = groups.some((group) => group.state === 'running')
-  const failed = groups.some((group) => group.state === 'failed')
+  const failed = groups.reduce((sum, group) => sum
+    + group.toolCalls.filter((tool) => (tool.status === 'failed' || tool.status === 'cancelled') && !isSourceWarning(tool)).length
+    + group.steps.filter((step) => step.status === 'failed').length, 0)
+  const warnings = groups.reduce((sum, group) => sum + group.toolCalls.filter(isSourceWarning).length, 0)
   if (running) return `正在处理 · ${count} 项活动`
-  if (failed) return `${count} 项活动 · 有操作未完成`
+  if (failed) return `已处理 ${count} 项 · ${failed} 项未完成`
+  if (warnings) return `已处理 ${count} 项 · ${warnings} 个来源不可用`
   const names = groups.slice(0, 3).map((group) => `${GROUP_META[group.kind].label} ${group.count}`)
   return `已处理 ${names.join(' · ')}`
 }
@@ -207,7 +211,7 @@ export function WorkTimeline({ detail, approvals, onOpenDetails, onOpenChanges }
           </section>
         )
       })}
-      {active && <div className="agent-working" role="status"><Icon name="activity" size={14} /><span>{detail.status === 'verifying' ? '正在检查结果' : detail.status === 'planning' ? '正在整理步骤' : '正在处理'}</span></div>}
+      {active && <div className="agent-working" role="status" aria-live="polite"><Icon name="activity" size={14} /><span>{detail.progress?.message ?? (detail.status === 'verifying' ? '正在检查结果' : detail.status === 'planning' ? '正在整理步骤' : '正在处理')}</span></div>}
       {detail.status === 'failed' && <div className="inline-notice error"><Icon name="warning" /><span>{safeFailureMessage(detail)}</span></div>}
       <div ref={tailRef} className="timeline-tail" aria-hidden="true" />
     </div>

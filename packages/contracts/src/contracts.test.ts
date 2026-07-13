@@ -92,6 +92,37 @@ describe('renderer contracts', () => {
     expect(parsed.kind).toBe('message.delta')
   })
 
+  it('validates bounded, non-reasoning progress at renderer and worker boundaries', () => {
+    const progressEvent = RunEventSchema.parse({
+      id: 'event-progress',
+      runId: 'run-1',
+      sequence: 2,
+      at: now,
+      kind: 'progress.updated',
+      progress: {
+        phase: 'composing_tool',
+        message: '正在准备写入文件 · 已生成约 8k 字符',
+        toolName: 'file_draft_append',
+        generatedChars: 8_192,
+        updatedAt: now,
+      },
+    })
+    expect(progressEvent.kind).toBe('progress.updated')
+
+    const workerEvent = parsePiAgentHostEvent({
+      protocolVersion: WORKER_PROTOCOL_VERSION,
+      type: 'agent.event',
+      runId: 'run-1',
+      event: {
+        type: 'agent.progress',
+        phase: 'thinking',
+        message: '正在整理当前步骤',
+        generatedChars: 1_024,
+      },
+    })
+    expect(workerEvent.type).toBe('agent.event')
+  })
+
   it('exposes only bounded tool receipts and approval history in run details', () => {
     const detail = RunDetailSchema.parse({
       run: {

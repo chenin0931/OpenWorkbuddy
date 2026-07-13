@@ -63,6 +63,8 @@
 .activity-group > header { display: flex; align-items: center; min-height: 34px; gap: 7px; color: var(--text-secondary); }
 .activity-group > header strong { flex: 1; font-size: 12px; }
 .activity-group > header span { font-size: 11px; }
+.activity-warning > header { color: var(--warning); }
+.activity-warning .tool-status-failed .tool-status-dot, .activity-warning .tool-status-cancelled .tool-status-dot { background: var(--warning); }
 .activity-row { display: grid; grid-template-columns: 8px minmax(0, 1fr) auto; align-items: center; min-height: 42px; gap: 8px; padding: 5px 0 5px 23px; border-top: 1px solid var(--separator); }
 .activity-row > span:nth-child(2) { display: flex; min-width: 0; gap: 2px; flex-direction: column; }
 .activity-row strong { overflow: hidden; font-size: 12px; font-weight: 560; text-overflow: ellipsis; white-space: nowrap; }

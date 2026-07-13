@@ -96,6 +96,14 @@ export interface VerificationView extends JsonRecord {
   checks: VerificationCheckItem[]
 }
 
+export interface RunProgressItem extends JsonRecord {
+  phase: 'thinking' | 'composing_tool' | 'executing' | 'verifying'
+  message: string
+  toolName?: string
+  generatedChars?: number
+  updatedAt?: string
+}
+
 export interface ApprovalItem extends JsonRecord {
   id: string
   title: string
@@ -143,6 +151,7 @@ export interface RunDetailView extends RunItem {
   diffs: DiffItem[]
   context: JsonRecord[]
   verification?: VerificationView
+  progress?: RunProgressItem
 }
 
 export type ModelProvider = 'openai' | 'anthropic' | 'moonshotai-cn'

@@ -113,6 +113,17 @@ function currentVerification(row: any): any | undefined {
     ?.payload?.verification
 }
 
+function currentProgress(row: any): any | undefined {
+  if (!['understanding', 'planning', 'running', 'verifying'].includes(String(row.status))) return undefined
+  const turnStartedAt = currentTurnStartedAt(row)
+  const event = [...(row.events ?? [])].reverse().find((candidate: any) =>
+    candidate.type === 'progress.updated'
+      && candidate.payload?.progress
+      && (!turnStartedAt || String(candidate.createdAt ?? candidate.created_at) >= String(turnStartedAt)),
+  )
+  return event?.payload?.progress
+}
+
 export function presentRun(row: any, fallbackModel: ModelProfile): Run {
   const snapshot = row.modelSnapshot && Object.keys(row.modelSnapshot).length ? row.modelSnapshot : modelSnapshot(fallbackModel)
   const limits = { ...DEFAULT_LIMITS, ...(row.limits ?? {}) }
@@ -322,6 +333,7 @@ export function presentApprovalHistory(row: any): ApprovalHistoryEntry {
 
 export function presentRunDetail(row: any, fallbackModel: ModelProfile): RunDetail {
   const persistedVerification = currentVerification(row)
+  const progress = currentProgress(row)
   const turnStartedAt = currentTurnStartedAt(row)
   return {
     run: presentRun(row, fallbackModel),
@@ -357,6 +369,7 @@ export function presentRunDetail(row: any, fallbackModel: ModelProfile): RunDeta
     approvalHistory: (row.approvalHistory ?? row.approvals ?? []).map(presentApprovalHistory),
     artifacts: (row.artifacts ?? []).map(presentArtifact),
     ...(persistedVerification ? { verification: persistedVerification } : {}),
+    ...(progress ? { progress } : {}),
   }
 }
 

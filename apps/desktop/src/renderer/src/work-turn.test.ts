@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { EventItem, RunDetailView, ToolActivityItem } from './types'
-import { attentionForRun, buildWorkTurns, classifyToolActivity } from './work-turn'
+import { attentionForRun, buildWorkTurns, classifyToolActivity, isSourceWarning } from './work-turn'
 
 const at = (minute: number) => `2026-07-12T10:${String(minute).padStart(2, '0')}:00.000Z`
 
@@ -202,5 +202,20 @@ describe('WorkTurn view model', () => {
     expect(classifyToolActivity(tool('mcp', 'github/create_issue', 1))).toBe('mcp')
     expect(classifyToolActivity(tool('chrome', 'chrome_navigate', 1))).toBe('web')
     expect(classifyToolActivity(tool('plan', 'task_step_update', 1))).toBe('plan')
+  })
+
+  it('treats unavailable web sources as warnings without hiding real failures', () => {
+    const sourceFailure = tool('web-failed', 'web_fetch', 1, 'failed')
+    expect(isSourceWarning(sourceFailure)).toBe(true)
+    expect(isSourceWarning(tool('write-failed', 'file_write', 2, 'failed'))).toBe(false)
+
+    const turns = buildWorkTurns(detail({
+      status: 'completed',
+      events: [message('user-1', 'user', '调研', 1), message('assistant-1', 'agent', '已整理', 4)],
+      toolCalls: [sourceFailure, tool('web-ok', 'web_fetch', 2, 'succeeded')],
+    }))
+    expect(turns[0]?.activity).toMatchObject([
+      { kind: 'web', state: 'warning', summary: '已处理 2 项网页操作，部分来源不可用' },
+    ])
   })
 })

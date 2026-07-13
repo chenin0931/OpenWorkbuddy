@@ -219,6 +219,16 @@ async function startRun(command: StartCommand): Promise<void> {
   let turns = 0
   let budgetExhausted = false
   let lastCheckpointSignature = ''
+  let turnActive = false
+  let lastProgressAt = 0
+  const toolDrafts = new Map<number, { toolName?: string; generatedChars: number }>()
+  const toolLabel = (toolName?: string): string => command.tools.find((tool) => tool.id === toolName)?.label ?? toolName ?? '下一步操作'
+  const publishProgress = (phase: 'thinking' | 'composing_tool', message: string, details: { toolName?: string; generatedChars?: number } = {}, force = false): void => {
+    const timestamp = Date.now()
+    if (!force && timestamp - lastProgressAt < 900) return
+    lastProgressAt = timestamp
+    send({ type: 'agent.event', runId: command.runId, event: { type: 'agent.progress', phase, message, ...details } })
+  }
   const history: AgentMessage[] = (command.history ?? []).map((message) => message.role === 'user'
     ? { role: 'user', content: message.content, timestamp: message.timestamp ?? Date.now(), ...(message.sourceRef ? { sourceRef: message.sourceRef } : {}) } as AgentMessage
     : {
@@ -284,6 +294,10 @@ async function startRun(command: StartCommand): Promise<void> {
     command.timeoutMs ?? 2 * 60 * 60 * 1000,
   )
   timers.set(command.runId, timeout)
+  const heartbeat = setInterval(() => {
+    if (!turnActive || Date.now() - lastProgressAt < 7_500) return
+    publishProgress('thinking', '正在分析材料并组织下一步…', {}, true)
+  }, 2_500)
 
   agent.subscribe(async (event: AgentEvent) => {
     if (event.type === 'turn_start') {
@@ -292,11 +306,53 @@ async function startRun(command: StartCommand): Promise<void> {
         return
       }
       turns += 1
+      turnActive = true
+      toolDrafts.clear()
+      publishProgress('thinking', turns === 1 ? '正在理解目标并规划执行路径…' : '正在结合刚才的结果继续处理…', {}, true)
       send({ type: 'agent.event', runId: command.runId, event: { type: 'agent.turn', turn: turns } })
     }
-    if (event.type === 'message_update' && event.assistantMessageEvent.type === 'text_delta') {
-      send({ type: 'agent.event', runId: command.runId, event: { type: 'text.delta', delta: event.assistantMessageEvent.delta } })
+    if (event.type === 'turn_end') {
+      turnActive = false
+      toolDrafts.clear()
       return
+    }
+    if (event.type === 'message_update') {
+      const update = event.assistantMessageEvent
+      if (update.type === 'text_delta') {
+        lastProgressAt = Date.now()
+        send({ type: 'agent.event', runId: command.runId, event: { type: 'text.delta', delta: update.delta } })
+        return
+      }
+      if (update.type === 'thinking_start') {
+        publishProgress('thinking', '正在分析材料并校准下一步…', {}, true)
+        return
+      }
+      if (update.type === 'thinking_delta') {
+        publishProgress('thinking', '正在分析材料并校准下一步…')
+        return
+      }
+      if (update.type === 'toolcall_start') {
+        const partial = update.partial?.content?.[update.contentIndex] as any
+        const toolName = typeof partial?.name === 'string' ? partial.name : typeof partial?.toolName === 'string' ? partial.toolName : undefined
+        toolDrafts.set(update.contentIndex, { ...(toolName ? { toolName } : {}), generatedChars: 0 })
+        publishProgress('composing_tool', `正在准备${toolLabel(toolName)}…`, toolName ? { toolName, generatedChars: 0 } : { generatedChars: 0 }, true)
+        return
+      }
+      if (update.type === 'toolcall_delta') {
+        const current = toolDrafts.get(update.contentIndex) ?? { generatedChars: 0 }
+        current.generatedChars += update.delta.length
+        toolDrafts.set(update.contentIndex, current)
+        const amount = current.generatedChars >= 1_000 ? ` · 已生成约 ${Math.round(current.generatedChars / 100) / 10}k 字符` : ''
+        publishProgress('composing_tool', `正在准备${toolLabel(current.toolName)}${amount}…`, {
+          ...(current.toolName ? { toolName: current.toolName } : {}),
+          generatedChars: current.generatedChars,
+        })
+        return
+      }
+      if (update.type === 'toolcall_end') {
+        toolDrafts.delete(update.contentIndex)
+        return
+      }
     }
     if (event.type === 'message_end') {
       const message: any = event.message
@@ -344,6 +400,7 @@ async function startRun(command: StartCommand): Promise<void> {
     }
   } finally {
     clearTimeout(timeout)
+    clearInterval(heartbeat)
     timers.delete(command.runId)
     agents.delete(command.runId)
   }

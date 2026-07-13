@@ -127,6 +127,15 @@ export function useWorkbench() {
         })
         return
       }
+      if (value.kind === 'progress.updated' && value.runId === selectedRunId && value.progress && typeof value.progress === 'object') {
+        const progress = value.progress as Record<string, unknown>
+        if (typeof progress.message === 'string' && progress.message) {
+          setRunDetail((current) => current && current.id === selectedRunId
+            ? { ...current, progress: progress as NonNullable<RunDetailView['progress']> }
+            : current)
+        }
+        return
+      }
       if (value.kind === 'tool.updated' && value.runId === selectedRunId && value.toolCall && typeof value.toolCall === 'object') {
         const toolCall = value.toolCall as Record<string, unknown>
         const toolId = typeof toolCall.id === 'string' ? toolCall.id : String(value.id ?? 'tool')

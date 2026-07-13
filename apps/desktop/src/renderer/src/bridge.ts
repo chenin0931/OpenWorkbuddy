@@ -17,6 +17,7 @@ import type {
   RunDetailView,
   RunAccessMode,
   RunItem,
+  RunProgressItem,
   RunStatus,
   SourceItem,
   SettingsView,
@@ -512,6 +513,24 @@ function normalizeVerification(value: unknown): VerificationView | undefined {
   return { ...source, status: rawStatus, checks, ...(summary ? { summary } : {}) }
 }
 
+function normalizeProgress(value: unknown): RunProgressItem | undefined {
+  const source = record(value)
+  const phaseValue = textValue(source, ['phase'], 'thinking')
+  const phase: RunProgressItem['phase'] = phaseValue === 'composing_tool' || phaseValue === 'executing' || phaseValue === 'verifying'
+    ? phaseValue
+    : 'thinking'
+  const message = textValue(source, ['message', 'summary'])
+  if (!message) return undefined
+  const item: RunProgressItem = { ...source, phase, message }
+  const toolName = textValue(source, ['toolName', 'tool'])
+  const generatedChars = numberValue(source, ['generatedChars'])
+  const updatedAt = textValue(source, ['updatedAt', 'updated_at'])
+  if (toolName) item.toolName = toolName
+  if (generatedChars !== undefined) item.generatedChars = generatedChars
+  if (updatedAt) item.updatedAt = updatedAt
+  return item
+}
+
 function normalizeApproval(value: unknown, index: number): ApprovalItem {
   const source = record(value)
   const rawRisk = textValue(source, ['risk', 'riskLevel'], 'reversible_write')
@@ -606,6 +625,7 @@ export async function getRunDetail(runId: string, fallback?: RunItem): Promise<R
     .map(normalizeSource)
     .filter((item): item is SourceItem => Boolean(item))
   const verification = normalizeVerification(source.verification)
+  const progress = normalizeProgress(source.progress)
   return {
     ...base,
     steps: arrayValue(section(source, ['steps', 'plan']), ['items', 'steps']).map(normalizeStep),
@@ -618,6 +638,7 @@ export async function getRunDetail(runId: string, fallback?: RunItem): Promise<R
     diffs: explicitDiffs.length ? explicitDiffs : artifactDiffs,
     context: arrayValue(section(source, ['context', 'contextItems']), ['items']).map(record),
     ...(verification ? { verification } : {}),
+    ...(progress ? { progress } : {}),
   }
 }
 

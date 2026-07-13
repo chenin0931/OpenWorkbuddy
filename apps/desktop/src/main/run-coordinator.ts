@@ -345,6 +345,24 @@ export class RunCoordinator {
     // Once the durable state says execution is no longer active, all late text,
     // tool and terminal events are ignored rather than mutating the checkpoint.
     if (IGNORE_LATE_AGENT_EVENT_STATUSES.has(current.status)) return
+    if (event.type === 'agent.progress') {
+      const at = new Date().toISOString()
+      this.emit({
+        id: randomUUID(),
+        runId,
+        sequence: this.nextSequence(runId),
+        at,
+        kind: 'progress.updated',
+        progress: {
+          phase: event.phase,
+          message: String(event.message).slice(0, 500),
+          ...(typeof event.toolName === 'string' ? { toolName: event.toolName.slice(0, 200) } : {}),
+          ...(Number.isInteger(event.generatedChars) && event.generatedChars >= 0 ? { generatedChars: event.generatedChars } : {}),
+          updatedAt: at,
+        },
+      })
+      return
+    }
     if (event.type === 'agent.started') {
       this.database.appendRunEvent(runId, 'agent.started', `使用 ${event.provider}/${event.modelId} 开始`, event)
       return
@@ -372,7 +390,7 @@ export class RunCoordinator {
       return
     }
     if (event.type === 'agent.completed') {
-      const raw = this.database.getRun(runId)
+      let raw = this.database.getRun(runId)
       // abort() is also used to implement pause/cancel. Ignore the worker's late
       // terminal event so it cannot overwrite the user-visible control state.
       if (!raw || ['paused', 'cancelled', 'completed', 'failed'].includes(raw.status)) return
@@ -386,6 +404,11 @@ export class RunCoordinator {
           summary: event.content || raw.summary,
         })
       } else {
+        if (raw.outcome !== 'verified' && raw.outcome !== 'partial') {
+          this.broker.finalizeTurn(runId, event.content || raw.summary || '工作已结束')
+          raw = this.database.getRun(runId)
+          if (!raw) return
+        }
         // A plain conversational answer is complete but is not automatically a
         // partial verification verdict. Only task_complete may set outcome.
         if (raw.status !== 'verifying') this.database.transitionRun(runId, 'verifying', { outcome: null })

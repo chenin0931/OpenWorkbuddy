@@ -127,6 +127,27 @@ describe('run detail public projection', () => {
     expect(detail.steps).toEqual([])
   })
 
+  it('restores only the current active turn progress', () => {
+    const later = '2026-07-11T12:05:00.000Z'
+    const detail = presentRunDetail({
+      id: 'run-progress', workspaceId: 'workspace-1', title: 'Long report', prompt: 'Write it', status: 'running', outcome: null,
+      modelSnapshot: { profileId: model.id, provider: model.provider, modelId: model.modelId, capabilities: model.capabilities },
+      limits: {}, modelTurns: 1, createdAt: now, updatedAt: later, messages: [], toolCalls: [], steps: [], artifacts: [], approvals: [], approvalHistory: [],
+      events: [
+        { id: 1, type: 'progress.updated', payload: { progress: { phase: 'thinking', message: 'stale', updatedAt: now } }, createdAt: now },
+        { id: 2, type: 'run.turn_started', payload: { reason: 'follow_up' }, createdAt: later },
+        { id: 3, type: 'progress.updated', payload: { progress: { phase: 'composing_tool', message: '正在准备写入文件', toolName: 'file_draft_append', generatedChars: 8_192, updatedAt: later } }, createdAt: later },
+      ],
+    }, model)
+    expect(detail.progress).toMatchObject({
+      phase: 'composing_tool',
+      message: '正在准备写入文件',
+      toolName: 'file_draft_append',
+      generatedChars: 8_192,
+    })
+    expect(RunDetailSchema.parse(detail)).toEqual(detail)
+  })
+
   it('surfaces a completion verdict only when the current turn has a matching verification receipt', () => {
     const detail = presentRunDetail({
       id: 'run-verified', workspaceId: 'workspace-1', title: 'Verified task', prompt: 'Verify', status: 'completed', outcome: 'verified',

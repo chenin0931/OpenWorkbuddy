@@ -145,9 +145,14 @@ export function classifyToolActivity(tool: ToolActivityItem): ActivityKind {
   return toolKind(tool)
 }
 
-function toolState(status: ToolActivityItem['status']): ActivityState {
-  if (status === 'failed' || status === 'cancelled') return 'failed'
-  if (status === 'succeeded') return 'completed'
+export function isSourceWarning(tool: ToolActivityItem): boolean {
+  return (tool.status === 'failed' || tool.status === 'cancelled') && /^(?:web_search|web_fetch)$/.test(tool.toolName)
+}
+
+function toolState(tool: ToolActivityItem): ActivityState {
+  if (isSourceWarning(tool)) return 'warning'
+  if (tool.status === 'failed' || tool.status === 'cancelled') return 'failed'
+  if (tool.status === 'succeeded') return 'completed'
   return 'running'
 }
 
@@ -160,6 +165,7 @@ function stepState(status: PlanStepItem['status']): ActivityState {
 function aggregateState(states: ActivityState[]): ActivityState {
   if (states.includes('failed')) return 'failed'
   if (states.includes('running')) return 'running'
+  if (states.includes('warning')) return 'warning'
   return 'completed'
 }
 
@@ -167,6 +173,7 @@ function activitySummary(kind: ActivityKind, state: ActivityState, count: number
   const quantity = `${count} ${ACTIVITY_NOUNS[kind]}`
   if (state === 'running') return `正在处理 ${quantity}`
   if (state === 'failed') return `${quantity}未完成`
+  if (state === 'warning') return `已处理 ${quantity}，部分来源不可用`
   return `已完成 ${quantity}`
 }
 
@@ -181,7 +188,7 @@ function buildActivityGroups(tools: ToolActivityItem[], steps: PlanStepItem[]): 
     ...tools.map((tool, index) => ({
       kind: toolKind(tool),
       id: tool.id,
-      state: toolState(tool.status),
+      state: toolState(tool),
       tool,
       index,
       at: timestamp(activityTime(tool)),

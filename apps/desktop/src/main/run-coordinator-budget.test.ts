@@ -26,7 +26,7 @@ async function fixture(): Promise<{
   const database = new AppDatabase(join(directory, 'state.sqlite3'))
   const host = { startRun: vi.fn(), cancelRun: vi.fn(), toolResult: vi.fn(), steer: vi.fn() }
   const runner = { cancel: vi.fn(), cancelRun: vi.fn() }
-  const broker = { rejectRunApprovals: vi.fn() }
+  const broker = { rejectRunApprovals: vi.fn(), finalizeTurn: vi.fn(() => ({ verificationRequired: false, outcome: null })) }
   const artifacts = new ArtifactStore(join(directory, 'artifacts'), database)
   const broadcast = vi.fn()
   const coordinator = new RunCoordinator(

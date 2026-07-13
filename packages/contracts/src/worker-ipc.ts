@@ -134,6 +134,7 @@ export type PiAgentHostCommand =
 
 export type PiAgentEventPayload =
   | { type: 'text.delta'; delta: string }
+  | { type: 'agent.progress'; phase: 'thinking' | 'composing_tool'; message: string; toolName?: string; generatedChars?: number }
   | { type: 'message.assistant'; content: string; usage?: JsonValue; stopReason?: string; errorMessage?: string }
   | { type: 'agent.turn'; turn: number }
   | { type: 'agent.budget_exhausted'; budget: 'model_turns' | 'duration'; message: string; turns: number }
@@ -258,6 +259,7 @@ const PiAgentToolDescriptorSchema = z
 
 const PiAgentEventPayloadSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('text.delta'), delta: z.string() }).strict(),
+  z.object({ type: z.literal('agent.progress'), phase: z.enum(['thinking', 'composing_tool']), message: z.string().min(1).max(500), toolName: z.string().min(1).max(200).optional(), generatedChars: z.number().int().nonnegative().optional() }).strict(),
   z.object({ type: z.literal('message.assistant'), content: z.string(), usage: JsonValueSchema.optional(), stopReason: z.string().optional(), errorMessage: z.string().optional() }).strict(),
   z.object({ type: z.literal('agent.turn'), turn: z.number().int().positive() }).strict(),
   z.object({ type: z.literal('agent.budget_exhausted'), budget: z.enum(['model_turns', 'duration']), message: z.string().min(1), turns: z.number().int().nonnegative() }).strict(),

@@ -23,7 +23,7 @@ interface PendingApproval {
 
 const sourceFor = (id: string): ToolDescriptor['source'] => id.startsWith('chrome_') ? 'chrome' : id.startsWith('mcp_') ? 'mcp' : 'builtin'
 const policyName = (id: string): string => ({
-  file_list: 'file.list', file_read: 'file.read', file_search: 'file.search', file_write: 'file.write', file_replace: 'file.edit', file_delete: 'file.delete',
+  file_list: 'file.list', file_read: 'file.read', file_search: 'file.search', file_write: 'file.write', file_draft_start: 'file.stage', file_draft_append: 'file.stage', file_draft_commit: 'file.write', file_replace: 'file.edit', file_delete: 'file.delete',
   shell_run: 'shell.command', web_search: 'web.search', web_fetch: 'web.fetch', mcp_list_tools: 'mcp.list', mcp_call_tool: 'mcp.call', skill_read: 'skill.read', memory_propose: 'memory.propose',
   task_plan: 'task.plan', task_complete: 'task.complete', agent_delegate: 'agent.delegate', chrome_tabs: 'chrome.read', chrome_snapshot: 'chrome.read_dom',
   chrome_screenshot: 'chrome.screenshot', chrome_navigate: 'chrome.navigate', chrome_click: 'chrome.click', chrome_type: 'chrome.input_sensitive', chrome_open_tab: 'chrome.navigate',
@@ -68,6 +68,7 @@ function redactValue(value: unknown, key = ''): unknown {
 function loggedArguments(toolId: string, args: Record<string, unknown>): JsonValue {
   const copy = redactValue(args) as Record<string, unknown>
   if (toolId === 'file_write' && typeof args.content === 'string') copy.content = `[FILE CONTENT REDACTED: ${args.content.length} chars]`
+  if ((toolId === 'file_draft_start' || toolId === 'file_draft_append') && typeof args.content === 'string') copy.content = `[DRAFT CONTENT REDACTED: ${args.content.length} chars]`
   if (toolId === 'file_replace') {
     if (typeof args.oldText === 'string') copy.oldText = `[OLD TEXT REDACTED: ${args.oldText.length} chars]`
     if (typeof args.newText === 'string') copy.newText = `[NEW TEXT REDACTED: ${args.newText.length} chars]`
@@ -104,7 +105,9 @@ const MEMORY_KIND_MAP: Record<string, MemoryEntry['type']> = {
 
 const TOOL_STATUSES = new Set<ToolCall['status']>(['requested', 'waiting_approval', 'running', 'succeeded', 'failed', 'cancelled'])
 const STEP_STATUSES = new Set<TaskStep['status']>(['pending', 'in_progress', 'blocked', 'completed', 'failed', 'skipped'])
-const FILE_MUTATION_TOOLS = new Set(['file_write', 'file_replace', 'file_delete'])
+const FILE_MUTATION_TOOLS = new Set(['file_write', 'file_draft_commit', 'file_replace', 'file_delete'])
+const MAX_FILE_DRAFT_CHARS = 2 * 1024 * 1024
+const MAX_UNIQUE_SEARCHES_PER_TURN = 10
 const PUBLIC_SKILL_ROOT_FILES = new Set(['SKILL.md', 'README.md', 'LICENSE', 'LICENSE.md', 'NOTICE', 'NOTICE.md'])
 const PUBLIC_SKILL_DIRECTORIES = new Set(['scripts', 'references', 'reference', 'docs', 'examples', 'templates', 'assets'])
 const SENSITIVE_SKILL_RESOURCE = /^(?:\.env(?:\..+)?|(?:config|secrets?|credentials?|tokens?|auth|api[-_]?keys?|private[-_]?keys?)(?:\.[a-z0-9_-]+)*\.(?:json|ya?ml|toml|ini|conf|env)|(?:secret|secrets|credential|credentials|token|tokens|auth)|.+\.(?:pem|key|p12|pfx)|id_(?:rsa|dsa|ecdsa|ed25519)(?:\.pub)?)$/i
@@ -135,6 +138,7 @@ function evaluateRunAccessPolicy(
 export class ToolBroker {
   private pendingApprovals = new Map<string, PendingApproval>()
   private fileLeaseTails = new Map<string, Promise<void>>()
+  private fileDrafts = new Map<string, { runId: string; path: string; content: string; expectedSha256?: string }>()
 
   constructor(
     private database: AppDatabase,
@@ -146,6 +150,16 @@ export class ToolBroker {
     private delegate: (input: { parentRunId: string; task: string; role: string }) => Promise<unknown>,
     private refreshMcpOAuth?: (serverId: string, serverUrl: string) => Promise<void>,
   ) {}
+
+  /**
+   * Apply the same deterministic completion gate when a model ends an
+   * operational turn without explicitly calling task_complete. Plain chat
+   * remains completion-status-free; tool work can no longer silently bypass
+   * pending steps, failed mutations, or missing verification.
+   */
+  finalizeTurn(runId: string, summary: string): ReturnType<ToolBroker['completeTask']> {
+    return this.completeTask(runId, { summary, evidence: [], unverified: [] })
+  }
 
   async handle(input: { runId: string; requestId: string; toolCallId: string; toolId: string; args: Record<string, unknown> }): Promise<unknown> {
     const tool = TOOL_DEFINITIONS.find((candidate) => candidate.id === input.toolId)
@@ -196,6 +210,16 @@ export class ToolBroker {
     const receiptId = this.database.createToolCall({ providerCallId: call.id, runId: call.runId, toolId: input.toolId, risk: decision.riskLevel, arguments: providerCall.arguments })
     const receiptCall: ToolCall = { ...providerCall, id: receiptId }
     const rawTarget = String(input.args.path ?? input.args.url ?? input.args.query ?? input.args.command ?? input.toolId)
+    const searchShortcut = input.toolId === 'web_search' ? this.searchShortcut(input.runId, input.args) : undefined
+    if (searchShortcut) {
+      this.database.audit('tool', input.toolId, `Agent 请求 ${tool.label}`, { actor: 'agent', outcome: 'allow', riskLevel: 'readonly', target: redactValue(rawTarget, 'target') as string, shortcut: searchShortcut.kind }, input.runId)
+      this.database.updateToolCall(receiptId, 'running')
+      this.emitTool(input.runId, receiptCall, 'running', 'readonly')
+      this.database.updateToolCall(receiptId, 'succeeded', persistedResult(searchShortcut.result))
+      this.database.audit('tool', input.toolId, searchShortcut.kind === 'cached' ? '复用已有搜索结果' : '搜索预算已收敛', { actor: 'tool', outcome: 'succeeded', riskLevel: 'readonly' }, input.runId)
+      this.emitTool(input.runId, receiptCall, 'succeeded', 'readonly')
+      return searchShortcut.result
+    }
     this.database.audit('tool', input.toolId, `Agent 请求 ${tool.label}`, { actor: 'agent', outcome: decision.effect, riskLevel: decision.riskLevel, target: redactValue(rawTarget, 'target') as string }, input.runId)
 
     let args = input.args
@@ -226,6 +250,41 @@ export class ToolBroker {
       throw error
     } finally {
       releaseLease()
+    }
+  }
+
+  private searchShortcut(runId: string, args: Record<string, unknown>): { kind: 'cached' | 'budget'; result: JsonValue } | undefined {
+    const normalizedQuery = String(args.query ?? '').normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase('en-US')
+    if (!normalizedQuery) return undefined
+    const turnStartedAt = this.database.getCurrentRunTurnStartedAt(runId)
+    const rows = (turnStartedAt
+      ? this.database.db.prepare(`SELECT tool_id,state,arguments_json,result_json,created_at FROM tool_calls
+          WHERE run_id=? AND tool_id='web_search' AND created_at>=? ORDER BY created_at`).all(runId, turnStartedAt)
+      : this.database.db.prepare(`SELECT tool_id,state,arguments_json,result_json,created_at FROM tool_calls
+          WHERE run_id=? AND tool_id='web_search' ORDER BY created_at`).all(runId)) as any[]
+    const prior = rows.filter((row) => String(row.tool_id) === 'web_search' && ['succeeded', 'failed', 'cancelled'].includes(String(row.state))).map((row) => {
+      const previousArgs = parseJson(row.arguments_json) as Record<string, unknown>
+      const query = String(previousArgs.query ?? '').normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase('en-US')
+      return { row, query }
+    }).filter(({ query }) => Boolean(query))
+    const cached = [...prior].reverse().find(({ row, query }) => query === normalizedQuery && row.state === 'succeeded' && row.result_json)
+    if (cached) {
+      const result = parseJson(cached.row.result_json)
+      if (result && typeof result === 'object') return { kind: 'cached', result }
+    }
+    const uniqueQueries = new Set(prior.map(({ query }) => query))
+    if (uniqueQueries.size < MAX_UNIQUE_SEARCHES_PER_TURN) return undefined
+    return {
+      kind: 'budget',
+      result: asJson({
+        engine: 'local-budget',
+        query: String(args.query),
+        resultCount: 0,
+        results: [],
+        budgetExhausted: true,
+        uniqueSearches: uniqueQueries.size,
+        message: `本轮已使用 ${MAX_UNIQUE_SEARCHES_PER_TURN} 个不同搜索词。请基于已有来源收敛、读取已发现的原文并完成任务，不要用同义词继续搜索。`,
+      }),
     }
   }
 
@@ -315,9 +374,32 @@ export class ToolBroker {
       if (pending.approval.runId !== runId) continue
       this.pendingApprovals.delete(id); pending.reject(new Error(reason))
     }
+    for (const [draftId, draft] of this.fileDrafts) if (draft.runId === runId) this.fileDrafts.delete(draftId)
   }
 
   private async execute(runId: string, requestId: string, tool: ToolDefinition, args: Record<string, unknown>): Promise<any> {
+    if (tool.id === 'file_draft_start') {
+      const existingDrafts = [...this.fileDrafts.values()].filter((draft) => draft.runId === runId).length
+      if (existingDrafts >= 4) throw Object.assign(new Error('当前任务已有 4 个未提交草稿，请先提交或复用现有草稿'), { code: 'FILE_DRAFT_LIMIT' })
+      const draftId = randomUUID()
+      const content = String(args.content ?? '')
+      this.fileDrafts.set(draftId, {
+        runId,
+        path: String(args.path),
+        content,
+        ...(typeof args.expectedSha256 === 'string' ? { expectedSha256: args.expectedSha256 } : {}),
+      })
+      return { draftId, path: String(args.path), totalChars: content.length, committed: false }
+    }
+    if (tool.id === 'file_draft_append') {
+      const draftId = String(args.draftId)
+      const draft = this.fileDrafts.get(draftId)
+      if (!draft || draft.runId !== runId) throw Object.assign(new Error('长文草稿不存在或不属于当前任务'), { code: 'FILE_DRAFT_NOT_FOUND' })
+      const content = String(args.content ?? '')
+      if (draft.content.length + content.length > MAX_FILE_DRAFT_CHARS) throw Object.assign(new Error('长文草稿超过 2 MB 上限'), { code: 'FILE_DRAFT_TOO_LARGE' })
+      draft.content += content
+      return { draftId, path: draft.path, totalChars: draft.content.length, committed: false }
+    }
     if (tool.id === 'task_plan') {
       const steps = Array.isArray(args.steps) ? args.steps as Array<{ title: string }> : []
       const persistedSteps = this.database.replaceSteps(runId, steps)
@@ -377,6 +459,24 @@ export class ToolBroker {
     const workspace = this.database.getWorkspace(run.workspaceId)
     if (!workspace?.root_path) throw Object.assign(new Error('任务工作区不存在或已被移除'), { code: 'WORKSPACE_REQUIRED' })
     const authorizedRoot = run.accessMode === 'full_disk' ? '/' : workspace.root_path
+    if (tool.id === 'file_draft_commit') {
+      const draftId = String(args.draftId)
+      const draft = this.fileDrafts.get(draftId)
+      if (!draft || draft.runId !== runId) throw Object.assign(new Error('长文草稿不存在或不属于当前任务'), { code: 'FILE_DRAFT_NOT_FOUND' })
+      if (String(args.path) !== draft.path) throw Object.assign(new Error('提交路径与草稿目标不一致'), { code: 'FILE_DRAFT_PATH_MISMATCH' })
+      const writeArgs = {
+        path: draft.path,
+        content: draft.content,
+        ...(typeof args.expectedSha256 === 'string'
+          ? { expectedSha256: args.expectedSha256 }
+          : draft.expectedSha256 ? { expectedSha256: draft.expectedSha256 } : {}),
+      }
+      const snapshot = await this.prepareFileSnapshot(runId, requestId, tool, writeArgs, workspace.root_path, authorizedRoot)
+      const result = await this.runner.execute({ runId, requestId, toolId: 'file.write', args: writeArgs, workspacePath: workspace.root_path, authorizedRoot })
+      const captured = await this.captureArtifacts(runId, tool, result, snapshot)
+      this.fileDrafts.delete(draftId)
+      return { ...captured, draftId, totalChars: draft.content.length, committed: true }
+    }
     const preMutationSnapshot = tool.id === 'file_write' || tool.id === 'file_replace'
       ? await this.prepareFileSnapshot(runId, requestId, tool, args, workspace.root_path, authorizedRoot)
       : undefined
@@ -402,10 +502,15 @@ export class ToolBroker {
     try {
       const before = await this.runner.execute({ runId, requestId: `${requestId}-snapshot`, toolId: 'file.read', args: { path: args.path }, workspacePath, authorizedRoot })
       if (typeof before?.content !== 'string') throw new Error('写入前快照读取失败')
-      if (typeof args.expectedSha256 === 'string' && before.sha256 !== args.expectedSha256) throw Object.assign(new Error('文件在读取后已变化，请重新读取'), { code: 'STALE_WRITE' })
+      if (typeof args.expectedSha256 === 'string' && before.sha256 !== args.expectedSha256) {
+        throw Object.assign(new Error(`文件在读取后已变化（当前 sha256: ${String(before.sha256)}）。必须重新读取、合并最新内容并再次写入；写入成功前不得报告完成。`), {
+          code: 'STALE_WRITE',
+          details: { path: before.path, currentSha256: before.sha256 },
+        })
+      }
       return this.artifacts.putText({ runId, name: `${String(args.path).split('/').at(-1)}.before`, kind: 'file_snapshot', content: before.content, metadata: { path: before.path, sha256: before.sha256, createdFile: false, capturedBeforeMutation: true } })
     } catch (error: any) {
-      if (tool.id !== 'file_write' || error?.code !== 'ENOENT') throw error
+      if ((tool.id !== 'file_write' && tool.id !== 'file_draft_commit') || error?.code !== 'ENOENT') throw error
       return this.artifacts.putText({ runId, name: `${String(args.path).split('/').at(-1)}.before`, kind: 'file_snapshot', content: '', metadata: { path: args.path, sha256: null, createdFile: true, capturedBeforeMutation: true } })
     }
   }
@@ -444,6 +549,7 @@ export class ToolBroker {
       // Do not manufacture a partial verdict when there was no operational work
       // for the completion gate to verify.
       this.database.updateRun(runId, { outcome: null, summary: '' })
+      for (const [draftId, draft] of this.fileDrafts) if (draft.runId === runId) this.fileDrafts.delete(draftId)
       return { accepted: true, verificationRequired: false, outcome: null, evidence: [], reportedEvidence, unverified }
     }
     const checks: VerificationSummary['checks'] = []
@@ -473,7 +579,17 @@ export class ToolBroker {
       const hasPostMutationValidation = validationRows.some(({ row }) =>
         row.state === 'succeeded' && (Date.parse(String(row.updated_at ?? row.created_at)) || 0) >= latestMutationAt,
       )
-      if (!hasPostMutationValidation) {
+      const latestMutation = [...succeededMutations].sort((left, right) => String(right.updated_at).localeCompare(String(left.updated_at)))[0]
+      const mutationResult = parseJson(latestMutation?.result_json) as Record<string, unknown>
+      const postMutationRead = rows.find((row) => {
+        if (row.tool_id !== 'file_read' || row.state !== 'succeeded') return false
+        if ((Date.parse(String(row.updated_at ?? row.created_at)) || 0) < latestMutationAt) return false
+        const result = parseJson(row.result_json) as Record<string, unknown>
+        return typeof mutationResult.sha256 === 'string' && result.sha256 === mutationResult.sha256
+      })
+      if (postMutationRead) {
+        checks.push({ name: '文件写入回读', status: 'passed', detail: '最终文件已重新读取，sha256 与写入回执一致' })
+      } else if (!hasPostMutationValidation) {
         checks.push({ name: '文件修改验证', status: 'not_run', detail: '文件修改后没有成功的测试、类型检查、构建或等价验证命令' })
       }
     }
@@ -498,6 +614,8 @@ export class ToolBroker {
       const succeededReads = observableReads.filter((row) => row.state === 'succeeded' && row.result_json !== null).length
       observableEvidence.push(`读取回执：${succeededReads} 个可观察来源读取成功，${failedReads} 个失败`)
     }
+    const fetchedSources = rows.filter((row) => row.tool_id === 'web_fetch' && row.state === 'succeeded' && row.result_json !== null)
+    if (fetchedSources.length > 0) checks.push({ name: '来源核验', status: 'passed', detail: `成功读取 ${fetchedSources.length} 个原始网页来源` })
     // Durable output existence proves observability, not correctness. Only
     // validation commands and scoped external-system receipts become checks.
     if (checks.length === 0) checks.push({ name: '正确性验证', status: 'not_run', detail: '未发现成功的验证命令或可核验外部系统回执' })
@@ -518,7 +636,12 @@ export class ToolBroker {
         updatedAt: String(step.updatedAt ?? step.updated_at),
       }
     })
-    const gate = evaluateCompletionGate({ steps, toolCalls, checks, evidence: reportedEvidence, unverified })
+    const gateToolCalls = toolCalls.map((call) =>
+      ['web.search', 'web.fetch'].includes(call.toolName) && call.status === 'failed'
+        ? { ...call, status: 'cancelled' as const }
+        : call,
+    )
+    const gate = evaluateCompletionGate({ steps, toolCalls: gateToolCalls, checks, evidence: reportedEvidence, unverified })
     const submittedSummary = String(args.summary ?? '').trim()
     const verification: VerificationSummary = {
       ...gate,
@@ -532,11 +655,12 @@ export class ToolBroker {
       ...observableEvidence,
       ...checks.filter((check) => check.status === 'passed').map((check) => check.detail ? `${check.name}: ${check.detail}` : check.name),
     ]
+    for (const [draftId, draft] of this.fileDrafts) if (draft.runId === runId) this.fileDrafts.delete(draftId)
     return { accepted: true, verificationRequired: true, outcome: verification.status, evidence, reportedEvidence, unverified, verification }
   }
 
   private async captureArtifacts(runId: string, tool: ToolDefinition, result: any, preMutationSnapshot?: any): Promise<any> {
-    if ((tool.id === 'file_write' || tool.id === 'file_replace') && (typeof result?.before === 'string' || result?.before === null) && typeof result?.after === 'string') {
+    if ((tool.id === 'file_write' || tool.id === 'file_draft_commit' || tool.id === 'file_replace') && (typeof result?.before === 'string' || result?.before === null) && typeof result?.after === 'string') {
       const createdFile = result.before === null || result.created === true
       const before = createdFile ? '' : String(result.before)
       const afterSha256 = String(result.sha256 ?? '')

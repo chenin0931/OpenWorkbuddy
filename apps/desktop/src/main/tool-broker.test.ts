@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -79,6 +79,19 @@ function brokerFixture(database = new FakeDatabase(), execute?: (input: any) => 
 }
 
 describe('ToolBroker completion gate', () => {
+  it('automatically gates operational turns that end without task_complete', () => {
+    const fixture = brokerFixture()
+    fixture.database.run.steps = [{ id: 'step-1', runId: 'run-1', title: 'write report', ordinal: 0, status: 'pending', createdAt: now, updatedAt: now }]
+    fixture.database.toolRows.push({ id: 'write-1', run_id: 'run-1', tool_id: 'file_write', state: 'failed', arguments_json: JSON.stringify({ path: 'report.md', content: 'draft' }), result_json: null, error: 'stale write', created_at: now, updated_at: now })
+
+    const result = fixture.broker.finalizeTurn('run-1', 'Report complete')
+
+    expect(result.outcome).toBe('partial')
+    expect(fixture.database.run).toMatchObject({ status: 'verifying', outcome: 'partial' })
+    expect(result.verification?.summary).toContain('incomplete step')
+    expect(result.verification?.summary).toContain('unsettled tool call')
+  })
+
   it('treats task_complete alone as ordinary conversation instead of inventing a partial verdict', async () => {
     const { broker, database, events } = brokerFixture()
     const result = await broker.handle({ runId: 'run-1', requestId: 'request-1', toolCallId: 'complete-1', toolId: 'task_complete', args: { summary: 'done', evidence: ['tests passed'], unverified: [] } }) as any
@@ -145,6 +158,24 @@ describe('ToolBroker completion gate', () => {
 })
 
 describe('ToolBroker file leases and artifacts', () => {
+  it('stages long output in bounded chunks and commits it as one atomic file mutation', async () => {
+    const executed: any[] = []
+    const fixture = brokerFixture(new FakeDatabase(), async (input) => {
+      executed.push(input)
+      if (input.toolId === 'file.read') throw Object.assign(new Error('not found'), { code: 'ENOENT' })
+      if (input.toolId === 'file.write') return { path: '/workspace/report.md', before: null, after: input.args.content, beforeSha256: null, sha256: 'draft-hash', created: true }
+      return {}
+    })
+
+    const started = await fixture.broker.handle({ runId: 'run-1', requestId: 'draft-start', toolCallId: 'draft-start', toolId: 'file_draft_start', args: { path: 'report.md', content: 'first\n' } }) as any
+    await fixture.broker.handle({ runId: 'run-1', requestId: 'draft-append', toolCallId: 'draft-append', toolId: 'file_draft_append', args: { draftId: started.draftId, content: 'second\n' } })
+    const committed = await fixture.broker.handle({ runId: 'run-1', requestId: 'draft-commit', toolCallId: 'draft-commit', toolId: 'file_draft_commit', args: { draftId: started.draftId, path: 'report.md' } }) as any
+
+    expect(executed.find((input) => input.toolId === 'file.write')?.args.content).toBe('first\nsecond\n')
+    expect(committed).toMatchObject({ committed: true, totalChars: 13, sha256: 'draft-hash' })
+    expect(fixture.stored.some((artifact) => artifact.kind === 'diff')).toBe(true)
+  })
+
   it('serializes the same normalized path and records new-file snapshot/diff metadata', async () => {
     let active = 0
     let maxActive = 0
@@ -166,6 +197,34 @@ describe('ToolBroker file leases and artifacts', () => {
     const diff = fixture.stored.find((artifact) => artifact.kind === 'diff')
     expect(diff.metadata).toMatchObject({ path: '/workspace/new.txt', afterSha256: 'after-hash', createdFile: true, accessModeAtMutation: 'approval' })
     expect(diff.metadata.snapshotArtifactId).toMatch(/^artifact-/)
+  })
+})
+
+describe('ToolBroker research budget', () => {
+  it('reuses an identical successful search without another outbound request', async () => {
+    const execute = vi.fn(async () => ({ engine: 'bing-html', query: 'GraphRAG', resultCount: 1, results: [{ title: 'Official', url: 'https://example.test' }] }))
+    const fixture = brokerFixture(new FakeDatabase(), execute)
+
+    await fixture.broker.handle({ runId: 'run-1', requestId: 'search-1', toolCallId: 'search-1', toolId: 'web_search', args: { query: 'GraphRAG', maxResults: 8 } })
+    const repeated = await fixture.broker.handle({ runId: 'run-1', requestId: 'search-2', toolCallId: 'search-2', toolId: 'web_search', args: { query: '  graphrag  ', maxResults: 8 } }) as any
+
+    expect(execute).toHaveBeenCalledOnce()
+    expect(repeated).toMatchObject({ resultCount: 1 })
+  })
+
+  it('stops the eleventh unique search and tells the model to converge', async () => {
+    const database = new FakeDatabase()
+    for (let index = 0; index < 10; index += 1) {
+      database.toolRows.push({ id: `search-${index}`, run_id: 'run-1', tool_id: 'web_search', state: 'succeeded', arguments_json: JSON.stringify({ query: `query ${index}` }), result_json: JSON.stringify({ resultCount: 1, results: [] }), error: null, created_at: now, updated_at: now })
+    }
+    const execute = vi.fn(async () => ({ resultCount: 1, results: [] }))
+    const fixture = brokerFixture(database, execute)
+
+    const result = await fixture.broker.handle({ runId: 'run-1', requestId: 'search-11', toolCallId: 'search-11', toolId: 'web_search', args: { query: 'query 10' } }) as any
+
+    expect(execute).not.toHaveBeenCalled()
+    expect(result).toMatchObject({ budgetExhausted: true, uniqueSearches: 10 })
+    expect(result.message).toContain('基于已有来源收敛')
   })
 })
 

@@ -486,6 +486,14 @@ export interface ApprovalHistoryEntry extends ApprovalRequest {
   resolvedAt?: IsoDateTime
 }
 
+export interface RunProgress {
+  phase: 'thinking' | 'composing_tool' | 'executing' | 'verifying'
+  message: string
+  toolName?: string
+  generatedChars?: number
+  updatedAt: IsoDateTime
+}
+
 export interface RunDetail {
   run: Run
   steps: TaskStep[]
@@ -495,6 +503,7 @@ export interface RunDetail {
   approvalHistory: ApprovalHistoryEntry[]
   artifacts: ArtifactRef[]
   verification?: VerificationSummary
+  progress?: RunProgress
 }
 
 export interface BootstrapSnapshot {
@@ -516,6 +525,7 @@ export type RunEvent =
   | { id: string; runId: string; sequence: number; at: IsoDateTime; kind: 'approval.requested'; approval: ApprovalRequest }
   | { id: string; runId: string; sequence: number; at: IsoDateTime; kind: 'artifact.created'; artifact: ArtifactRef }
   | { id: string; runId: string; sequence: number; at: IsoDateTime; kind: 'verification.completed'; verification: VerificationSummary }
+  | { id: string; runId: string; sequence: number; at: IsoDateTime; kind: 'progress.updated'; progress: RunProgress }
   | { id: string; runId: string; sequence: number; at: IsoDateTime; kind: 'error'; error: PublicError }
 
 export interface PageRequest {

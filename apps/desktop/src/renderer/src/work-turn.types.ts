@@ -12,7 +12,7 @@ export type AttentionState = 'working' | 'approval' | 'input' | 'paused' | 'fail
 
 export type ActivityKind = 'files' | 'shell' | 'web' | 'mcp' | 'plan' | 'other'
 
-export type ActivityState = 'running' | 'completed' | 'failed'
+export type ActivityState = 'running' | 'completed' | 'warning' | 'failed'
 
 export interface UserPromptView {
   id: string
