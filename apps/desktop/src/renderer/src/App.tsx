@@ -10,11 +10,12 @@ import { MODEL_PROVIDER_META } from './features/settings/model-meta'
 import { ShellSidebar } from './features/shell/ShellSidebar'
 import { WelcomeComposer } from './features/shell/WelcomeComposer'
 import { WorkTimeline } from './features/work/WorkTimeline'
-import { WorkInspector, type WorkInspectorTab } from './features/work/WorkInspector'
+import { isUserVisibleArtifact, WorkInspector, type WorkInspectorTab } from './features/work/WorkInspector'
 import type {
   ApprovalItem,
   JsonRecord,
   ModelProvider,
+  PermissionMode,
   RunDetailView,
   ViewKey,
   WorkbenchSnapshot,
@@ -24,6 +25,7 @@ import {
   ConfirmDialog,
   Field,
   IconButton,
+  PermissionModePicker,
   Spinner,
   StatusBadge,
   SubmitForm,
@@ -202,8 +204,9 @@ function Onboarding({
   const [modelId, setModelId] = useState('gpt-5.2')
   const [key, setKey] = useState('')
   const [saving, setSaving] = useState(false)
-  const [memoryEnabled, setMemoryEnabled] = useState(true)
-  const [defaultExecutionMode, setDefaultExecutionMode] = useState<'plan' | 'execute'>('execute')
+  const [memoryEnabled, setMemoryEnabled] = useState(snapshot.settings.memoryEnabled !== false)
+  const [defaultExecutionMode, setDefaultExecutionMode] = useState<'plan' | 'execute'>(snapshot.settings.defaultExecutionMode === 'plan' ? 'plan' : 'execute')
+  const [permissionMode, setPermissionMode] = useState<PermissionMode>(snapshot.settings.permissionMode ?? 'balanced')
   useEffect(() => {
     const hasConnectedModel = snapshot.models.some((model) => model.hasSecret)
     if (open && step !== 0 && step < 3) setStep(hasConnectedModel ? snapshot.workspaces.length ? 3 : 2 : 1)
@@ -240,7 +243,7 @@ function Onboarding({
   }
   const finish = async () => {
     setKey('')
-    await perform(() => bridge.updateSettings({ memoryEnabled, defaultExecutionMode }), '设置已完成')
+    await perform(() => bridge.updateSettings({ memoryEnabled, defaultExecutionMode, permissionMode }), '设置已完成')
     onDone()
   }
   return (
@@ -261,7 +264,7 @@ function Onboarding({
           {step === 1 && <div className="setup-panel"><span className="eyebrow">第 1 步，共 4 步</span><h1>连接一个模型</h1><p>直接使用你的官方 API Key。密钥保存后不可从界面读取。</p><div className="provider-choice"><button type="button" className={provider === 'openai' ? 'is-active' : ''} onClick={() => selectProvider('openai')}><span>O</span><div><strong>OpenAI</strong><small>GPT 系列</small></div><i /></button><button type="button" className={provider === 'anthropic' ? 'is-active' : ''} onClick={() => selectProvider('anthropic')}><span>A</span><div><strong>Anthropic</strong><small>Claude 系列</small></div><i /></button><button type="button" className={provider === 'moonshotai-cn' ? 'is-active' : ''} onClick={() => selectProvider('moonshotai-cn')}><span className="kimi-provider-mark">K</span><div><strong>Kimi / Moonshot</strong><small>256K · 仅思考</small></div><i /></button></div><Field label="模型 ID"><input value={modelId} onChange={(event) => setModelId(event.target.value)} /></Field><Field label="API Key"><input type="password" value={key} onChange={(event) => setKey(event.target.value)} placeholder={MODEL_PROVIDER_META[provider].keyPlaceholder} /></Field>{provider === 'moonshotai-cn' && <div className="inline-notice kimi-model-notice"><Icon name="info" /><span>默认使用 Kimi K2.7 Code：256K 上下文，仅思考模式。</span></div>}<div className="secret-note"><Icon name="lock" />使用 macOS 系统加密存储；不会进入工具、日志或上下文。</div><button type="button" className="button primary setup-next" disabled={!modelId.trim() || !key.trim() || saving} onClick={() => void saveModel()}>{saving && <Spinner size={14} />}安全保存并继续<Icon name="arrowRight" /></button></div>}
           {step === 2 && <div className="setup-panel"><span className="eyebrow">第 2 步，共 4 步</span><h1>授权一个工作区</h1><p>WorkBuddy 只能通过文件工具访问你明确选择的根目录，并会阻止路径穿越和符号链接逃逸。</p><div className="workspace-picker-illustration"><span><Icon name="folder" size={30} /></span><div><strong>选择项目或资料文件夹</strong><small>你可以稍后添加多个工作区</small></div></div><ul className="safety-list"><li><Icon name="check" />修改前确认文件没有被其他程序更新</li><li><Icon name="check" />写入前保存快照，完成后展示变更</li><li><Icon name="check" />未知命令会在执行前请你确认</li></ul><button type="button" className="button primary setup-next" onClick={() => void chooseWorkspace()}>选择文件夹<Icon name="arrowRight" /></button></div>}
           {step === 3 && <div className="setup-panel"><span className="eyebrow">第 3 步，共 4 步</span><h1>连接 Chrome</h1><p>使用现有登录状态时，需要你手动加载扩展并绑定标签页；应用不会读取未授权页面。</p><div className="chrome-settings"><div className="chrome-illustration"><Icon name="globe" size={24} /></div><div><strong>{snapshot.chrome.connected ? 'Chrome 已连接' : snapshot.chrome.extensionInstalled ? '扩展已安装，当前离线' : '尚未检测到浏览器连接'}</strong><span>本地桥接：{snapshot.chrome.nativeHostInstalled ? '已安装' : '待安装'} · 可以稍后继续配置</span></div><span className={snapshot.chrome.connected ? 'health-pill healthy' : 'health-pill'}><i />{snapshot.chrome.connected ? '在线' : '可跳过'}</span></div><ul className="safety-list"><li><Icon name="check" />只访问你主动绑定给当前工作的标签页</li><li><Icon name="check" />不会导出 Cookie，也不会读取其他既有标签</li><li><Icon name="check" />提交、购买、发送、上传和删除仍需确认</li></ul><button type="button" className="button primary setup-next" onClick={() => setStep(4)}>{snapshot.chrome.connected ? '继续' : '稍后配置并继续'}<Icon name="arrowRight" /></button></div>}
-          {step === 4 && <div className="setup-panel"><span className="eyebrow">第 4 步，共 4 步</span><h1>确认执行边界</h1><p>读取和安全检查可以自动完成；发送、发布、删除和不可逆操作会停下来等你确认。</p><div className="boundary-list"><div><span className="boundary-icon green"><Icon name="check" /></span><span><strong>自动完成</strong><small>读取文件、搜索、查看 Git 状态</small></span></div><div><span className="boundary-icon amber"><Icon name="edit" /></span><span><strong>执行前检查</strong><small>文件写入、构建、安装和网络命令</small></span></div><div><span className="boundary-icon red"><Icon name="shield" /></span><span><strong>由你确认</strong><small>外部发送、删除、支付与发布</small></span></div></div><SettingRow title="新工作默认方式" detail="先整理计划时只使用只读能力。"><select value={defaultExecutionMode} onChange={(event) => setDefaultExecutionMode(event.target.value as 'plan' | 'execute')}><option value="execute">直接处理</option><option value="plan">先整理计划（只读）</option></select></SettingRow><SettingRow title="允许提出记忆候选" detail="所有候选仍需你确认后才生效。"><Toggle checked={memoryEnabled} onChange={setMemoryEnabled} label="记忆建议" /></SettingRow><button type="button" className="button primary setup-next" onClick={() => void finish()}>进入工作台<Icon name="arrowRight" /></button></div>}
+          {step === 4 && <div className="setup-panel"><span className="eyebrow">第 4 步，共 4 步</span><h1>选择权限级别</h1><p>决定低风险本机操作是否自动完成。发送、发布、支付、删除和外部副作用始终由你确认。</p><PermissionModePicker value={permissionMode} onChange={setPermissionMode} /><div className="secret-note"><Icon name="shield" />权限级别不会绕过工作区边界、写入快照、过期文件检查和本地活动记录。</div><SettingRow title="新工作默认方式" detail="先整理计划时只使用只读能力。"><select value={defaultExecutionMode} onChange={(event) => setDefaultExecutionMode(event.target.value as 'plan' | 'execute')}><option value="execute">直接处理</option><option value="plan">先整理计划（只读）</option></select></SettingRow><SettingRow title="允许提出记忆候选" detail="所有候选仍需你确认后才生效。"><Toggle checked={memoryEnabled} onChange={setMemoryEnabled} label="记忆建议" /></SettingRow><button type="button" className="button primary setup-next" onClick={() => void finish()}>进入工作台<Icon name="arrowRight" /></button></div>}
         </div>
       </section>
     </div>
@@ -275,7 +278,10 @@ export default function App() {
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string>()
   const [search, setSearch] = useState('')
   const [sidebarOpen, setSidebarOpen] = useState(() => window.localStorage.getItem('workbuddy.sidebar-open') !== 'false')
-  const [inspectorOpen, setInspectorOpen] = useState(() => window.localStorage.getItem('workbuddy.inspector-open') === 'true')
+  const [inspectorOpen, setInspectorOpen] = useState(() => {
+    const stored = window.localStorage.getItem('workbuddy.inspector-open')
+    return stored === null ? true : stored === 'true'
+  })
   const [cancelOpen, setCancelOpen] = useState(false)
   const [onboardingDismissed, setOnboardingDismissed] = useState(false)
   useResolvedTheme(snapshot.settings.theme)
@@ -307,6 +313,11 @@ export default function App() {
 
   useEffect(() => { window.localStorage.setItem('workbuddy.sidebar-open', String(sidebarOpen)) }, [sidebarOpen])
   useEffect(() => { window.localStorage.setItem('workbuddy.inspector-open', String(inspectorOpen)) }, [inspectorOpen])
+
+  const visibleArtifactCount = (runDetail?.artifacts.filter(isUserVisibleArtifact).length ?? 0) + (runDetail?.diffs.length ?? 0)
+  useEffect(() => {
+    if (visibleArtifactCount > 0) setInspectorOpen(true)
+  }, [selectedRunId, visibleArtifactCount])
 
   const selectedWorkspace = snapshot.workspaces.find((workspace) => workspace.id === selectedWorkspaceId)
   const shouldOnboard = !loading && !onboardingDismissed && snapshot.settings.onboardingCompleted === false

@@ -259,6 +259,20 @@ Risk levels are:
 | `external_side_effect` | Sends data or changes an external system | Approval; grant is forced to one use |
 | `high_risk_irreversible` | Delete, submit, purchase or equivalent impact | Explicit one-shot approval or deny |
 
+On top of deterministic classification, the user selects a convenience level:
+
+- `cautious` keeps every non-read action behind approval;
+- `balanced` automatically allows public search, stale-write-guarded workspace
+  writes, and a single recognized validation command;
+- `autonomous` additionally allows local reversible commands that do not send
+  data off-device.
+
+This layer can only turn eligible `require_approval` decisions into `allow`.
+It cannot override `deny`, mutating external side effects, network commands,
+destructive operations or high-risk irreversible actions. Public search is the
+single enumerated outbound-read exception. The Main-process broker remains the
+enforcement point; the model and Renderer cannot promote their own access.
+
 High-risk and external-side-effect grants cannot silently become broad permanent
 authority. Non-idempotent actions are never automatically replayed after an
 ambiguous failure.

@@ -27,14 +27,16 @@ boundaries rather than a chat wrapper.
 
 - OpenAI, Anthropic and Kimi/Moonshot model profiles with replaceable BYOK keys.
 - Permissioned file access, stale-write protection, snapshots, Diff and undo.
-- Shell execution with a strict read-only allowlist and approval for other work.
+- Three permission levels for low-risk local work, with external, destructive
+  and irreversible actions kept behind approval.
+- Shell execution with a strict read-only allowlist and deterministic risk policy.
 - Web Search and safe Web Fetch with redirect, address and response-size checks.
 - MCP stdio and Streamable HTTP, encrypted secrets and OAuth PKCE.
 - Progressive Skill loading, confirmed Memory and local capability packages.
 - Chrome Manifest V3 bridge with explicit task-scoped tab binding.
 - Local sub-agents, schedules, crash recovery, audit export and macOS notifications.
-- Quiet Workbench UI with grouped work turns, collapsed activity and on-demand
-  details.
+- Quiet Workbench UI with grouped work turns, collapsed activity and a persistent
+  artifact shelf for outputs, screenshots and file changes.
 
 ## Architecture
 

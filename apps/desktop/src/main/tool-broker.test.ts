@@ -8,7 +8,7 @@ import { ToolBroker } from './tool-broker'
 const now = '2026-07-11T00:00:00.000Z'
 
 class FakeDatabase {
-  settings: Record<string, unknown> = { appSettings: { memoryEnabled: true } }
+  settings: Record<string, unknown> = { appSettings: { memoryEnabled: true, permissionMode: 'cautious' } }
   run: any = { id: 'run-1', workspaceId: 'workspace-1', steps: [], status: 'running', readOnly: false }
   toolRows: any[] = []
   artifactRows: any[] = []
@@ -246,6 +246,28 @@ describe('ToolBroker capability enforcement', () => {
     await expect(pending).resolves.toMatchObject({ engine: 'bing-html', query: 'OpenWorkbuddy' })
     expect(runnerCalls).toHaveLength(1)
     expect(runnerCalls[0]).toMatchObject({ toolId: 'web.search', args: { query: 'OpenWorkbuddy', maxResults: 5 } })
+  })
+
+  it('runs a public search without an approval in balanced mode', async () => {
+    const database = new FakeDatabase()
+    database.settings.appSettings = { memoryEnabled: true, permissionMode: 'balanced' }
+    database.run.readOnly = true
+    database.granted = false
+    const runnerCalls: any[] = []
+    const fixture = brokerFixture(database, async (input) => {
+      runnerCalls.push(input)
+      return { engine: 'bing-html', query: input.args.query, resultCount: 0, results: [] }
+    })
+
+    await expect(fixture.broker.handle({
+      runId: 'run-1',
+      requestId: 'search-balanced',
+      toolCallId: 'search-balanced',
+      toolId: 'web_search',
+      args: { query: 'OpenWorkbuddy' },
+    })).resolves.toMatchObject({ query: 'OpenWorkbuddy' })
+    expect(runnerCalls).toHaveLength(1)
+    expect(database.approvals).toHaveLength(0)
   })
 
   it('keeps fetched page text out of the persisted tool receipt', async () => {

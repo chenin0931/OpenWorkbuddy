@@ -5,9 +5,11 @@ import type { ApprovalGrant, ToolCall, ToolDescriptor } from '@onmyworkbuddy/con
 import {
   classifyToolRisk,
   evaluateToolPolicy,
+  evaluateToolPolicyForMode,
   fingerprintArguments,
   isForbiddenMacAutomationCommand,
   isSafeReadOnlyShellCommand,
+  isValidationShellCommand,
 } from './policy'
 
 const now = '2026-07-10T12:00:00.000Z'
@@ -71,6 +73,31 @@ describe('risk policy', () => {
       sendsDataOffDevice: true,
     })
     expect(evaluateToolPolicy({ call: call('web.search', { query: 'OpenWorkbuddy' }), descriptor: descriptor('web.search') }).effect).toBe('require_approval')
+  })
+
+  it('applies the selected permission mode without relaxing external or destructive actions', () => {
+    const fileWrite = { call: call('file.write', { path: 'notes.md', content: 'x' }), descriptor: descriptor('file.write') }
+    const search = { call: call('web.search', { query: 'public release notes' }), descriptor: descriptor('web.search') }
+    const validation = { call: call('shell.command', { command: 'pnpm test' }), descriptor: descriptor('shell.command') }
+    const localCommand = { call: call('shell.command', { command: 'node scripts/generate.mjs' }), descriptor: descriptor('shell.command') }
+    const external = { call: call('shell.command', { command: 'git push origin main' }), descriptor: descriptor('shell.command') }
+    const destructive = { call: call('shell.command', { command: 'rm report.md' }), descriptor: descriptor('shell.command') }
+
+    expect(evaluateToolPolicyForMode(fileWrite, 'cautious').effect).toBe('require_approval')
+    expect(evaluateToolPolicyForMode(fileWrite, 'balanced').effect).toBe('allow')
+    expect(evaluateToolPolicyForMode(search, 'balanced').effect).toBe('allow')
+    expect(evaluateToolPolicyForMode(validation, 'balanced').effect).toBe('allow')
+    expect(evaluateToolPolicyForMode(localCommand, 'balanced').effect).toBe('require_approval')
+    expect(evaluateToolPolicyForMode(localCommand, 'autonomous').effect).toBe('allow')
+    expect(evaluateToolPolicyForMode(external, 'autonomous').effect).toBe('require_approval')
+    expect(evaluateToolPolicyForMode(destructive, 'autonomous')).toMatchObject({ effect: 'require_approval', riskLevel: 'high_risk_irreversible' })
+  })
+
+  it('recognizes only single validation commands for balanced automatic execution', () => {
+    expect(isValidationShellCommand('corepack pnpm typecheck')).toBe(true)
+    expect(isValidationShellCommand('cargo test --locked')).toBe(true)
+    expect(isValidationShellCommand('pnpm test && curl https://example.com')).toBe(false)
+    expect(isValidationShellCommand('node scripts/test-data.mjs')).toBe(false)
   })
 
   it.each([

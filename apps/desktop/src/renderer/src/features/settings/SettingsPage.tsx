@@ -15,6 +15,7 @@ import {
   IconButton,
   Modal,
   PageHeader,
+  PermissionModePicker,
   Spinner,
   SubmitForm,
   Toggle,
@@ -151,6 +152,14 @@ export function SettingsPage({ snapshot, selectedWorkspaceId, perform, onWorkspa
 
       <SettingsSection icon="memory" title="记忆" description="未经确认的候选不会影响以后的工作。">
         <SettingRow title="启用记忆建议" detail="工作收尾时允许 WorkBuddy 提出带来源的候选记忆。"><Toggle checked={settings.memoryEnabled !== false} label="启用记忆" onChange={(checked) => void perform(() => bridge.updateSettings({ memoryEnabled: checked }), checked ? '记忆建议已启用' : '记忆建议已关闭')} /></SettingRow>
+      </SettingsSection>
+
+      <SettingsSection icon="lock" title="权限级别" description="选择本机低风险动作的自动化程度；安全边界由执行层强制保证。">
+        <PermissionModePicker
+          value={settings.permissionMode ?? 'balanced'}
+          onChange={(permissionMode) => void perform(() => bridge.updateSettings({ permissionMode }), '权限级别已更新')}
+        />
+        <p className="permission-mode-note"><Icon name="shield" size={14} />无论选择哪一级，发送、发布、支付、删除、网络命令和未知外部操作都必须确认。</p>
       </SettingsSection>
 
       <SettingsSection icon="shield" title="默认处理方式" description="只影响新工作；先整理计划时，宿主只提供只读能力。">

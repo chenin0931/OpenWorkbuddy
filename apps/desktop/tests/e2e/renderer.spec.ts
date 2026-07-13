@@ -5,6 +5,13 @@ type StatusUxScenario = 'ordinary-completed' | 'current-verified' | 'current-par
 
 const FRONTEND_SCREENSHOT_DIR = path.resolve(process.cwd(), '../../outputs/frontend-refactor')
 
+async function ensureInspector(page: Page) {
+  const inspector = page.locator('.inspector')
+  if (await inspector.count() === 0) await page.getByRole('button', { name: '工作详情' }).click()
+  await expect(inspector).toBeVisible()
+  return inspector
+}
+
 async function installMockBridge(page: Page, onboarding: boolean, failModelSecret = false, presentation = false, timelineRegression = false, turnGroupingRegression = false, statusUxScenario?: StatusUxScenario, theme: 'light' | 'dark' = 'light'): Promise<void> {
   await page.addInitScript(({ onboardingMode, failSecret, presentationMode, timelineRegressionMode, turnGroupingRegressionMode, statusUxScenarioMode, themeMode }) => {
     const now = '2026-07-10T16:50:00.000Z'
@@ -19,6 +26,7 @@ async function installMockBridge(page: Page, onboarding: boolean, failModelSecre
       approvalPending: statusUxScenarioMode === 'waiting_approval' || (!statusUxMode && !(presentationMode || timelineRegressionMode || turnGroupingRegressionMode)),
       runStatus: statusUxRunStatus || (presentationMode || turnGroupingRegressionMode ? 'completed' : timelineRegressionMode ? 'running' : 'waiting_approval'),
       followUpContent: undefined as string | undefined,
+      permissionMode: 'balanced' as string,
     }
     const workspace = { id: 'workspace-1', name: 'WorkBuddy Demo', path: '/tmp/workbuddy-demo', selected: true, createdAt: now, updatedAt: now }
     const model: Record<string, unknown> = { id: 'model-1', name: 'OpenAI 主模型', provider: 'openai', modelId: 'gpt-5.4', isDefault: true, isSubagentDefault: true, keyConfigured: true, createdAt: now, updatedAt: now }
@@ -32,7 +40,7 @@ async function installMockBridge(page: Page, onboarding: boolean, failModelSecre
     const bootstrap = () => ({
       app: { name: 'OpenWorkbuddy', version: '0.3.0', platform: 'darwin', arch: 'x64', locale: 'zh-CN' },
       onboardingComplete: state.onboardingDone,
-      settings: { onboardingCompleted: state.onboardingDone, theme: themeMode, locale: 'zh-CN', memoryEnabled: true, timezone: 'Asia/Shanghai' },
+      settings: { onboardingCompleted: state.onboardingDone, theme: themeMode, locale: 'zh-CN', memoryEnabled: true, permissionMode: state.permissionMode, timezone: 'Asia/Shanghai' },
       workspaces: state.workspaceAdded ? [workspace] : [],
       modelProfiles: state.modelConnected ? [model] : [],
       runs: onboardingMode ? [] : [run()],
@@ -74,7 +82,11 @@ async function installMockBridge(page: Page, onboarding: boolean, failModelSecre
         setDefaults: async () => undefined,
       },
       settings: {
-        update: async () => { state.onboardingDone = true; return bootstrap().settings },
+        update: async (input: { permissionMode?: string }) => {
+          state.onboardingDone = true
+          if (input.permissionMode) state.permissionMode = input.permissionMode
+          return bootstrap().settings
+        },
       },
       runs: {
         list: async () => ({ items: onboardingMode ? [] : [run()] }),
@@ -169,7 +181,8 @@ test('首次启动完成模型、工作区和执行边界配置', async ({ page 
   await onboarding.getByRole('button', { name: '选择文件夹' }).click()
   await expect(onboarding.getByRole('heading', { name: '连接 Chrome' })).toBeVisible()
   await onboarding.getByRole('button', { name: /继续/ }).click()
-  await expect(onboarding.getByRole('heading', { name: '确认执行边界' })).toBeVisible()
+  await expect(onboarding.getByRole('heading', { name: '选择权限级别' })).toBeVisible()
+  await expect(onboarding.getByRole('radio', { name: /平衡/ })).toHaveAttribute('aria-checked', 'true')
   await onboarding.getByRole('button', { name: '进入工作台' }).click()
   await expect(onboarding).toBeHidden()
 })
@@ -178,6 +191,9 @@ test('Kimi 设置支持目录、品牌样式，并在失败与取消后清空假
   await installMockBridge(page, false, true)
   await page.goto('/')
   await page.getByRole('button', { name: '设置' }).click()
+  await expect(page.getByRole('radio', { name: /平衡/ })).toHaveAttribute('aria-checked', 'true')
+  await page.getByRole('radio', { name: /高效/ }).click()
+  await expect(page.getByRole('radio', { name: /高效/ })).toHaveAttribute('aria-checked', 'true')
   await page.getByRole('button', { name: /添加配置/ }).click()
 
   const addDialog = page.getByRole('dialog', { name: '添加模型配置' })
@@ -222,8 +238,8 @@ test('工作台支持确认、添加文件与持久化 Diff 预览', async ({ pa
   await expect(page.getByRole('heading', { name: '运行项目验证命令' })).toBeHidden()
   await page.getByRole('button', { name: '添加文件' }).click()
   await expect(page.getByRole('button', { name: '移除 验收说明.txt' })).toBeVisible()
-  await page.getByRole('button', { name: '工作详情' }).click()
-  const inspector = page.locator('.inspector')
+  const inspector = await ensureInspector(page)
+  await expect(inspector.getByRole('region', { name: '产物' })).toContainText('文件变更')
   await expect(inspector.getByRole('tab', { name: '详细' })).toBeVisible()
   await expect(inspector.getByRole('tab', { name: /变更/ })).toBeVisible()
   await expect(inspector.getByRole('tab', { name: '活动' })).toBeVisible()
@@ -242,8 +258,7 @@ test('工作结果安全渲染 Markdown、过滤空消息并保持可追问', as
   await expect(page.getByText('还有内容未检查', { exact: true }).first()).toBeVisible()
   await expect(page.getByPlaceholder('继续补充、调整方向或交代下一步…')).toBeEnabled()
 
-  await page.getByRole('button', { name: '工作详情' }).click()
-  const inspector = page.locator('.inspector')
+  const inspector = await ensureInspector(page)
   await expect(inspector.getByRole('tab', { name: '详细' })).toBeVisible()
   await expect(inspector.getByRole('link', { name: /示例新闻来源/ })).toBeVisible()
 
@@ -375,8 +390,8 @@ test('普通已结束对话不显示完成庆祝、状态圆点或无证据的�
   await expect(selectedTask.locator('.status-dot')).toHaveCount(0)
   await expect(page.locator('.completion-card')).toHaveCount(0)
 
-  const inspector = page.locator('.inspector')
-  await expect(inspector).toHaveCount(0)
+  const inspector = await ensureInspector(page)
+  await expect(inspector.getByRole('region', { name: '产物' })).toContainText('文件变更')
   await expect(page.locator('.run-header')).not.toContainText('检查通过')
   await expect(page.locator('.run-header')).not.toContainText('还有内容未检查')
 })
@@ -406,9 +421,7 @@ for (const { scenario, wording } of [
     await installMockBridge(page, false, false, false, false, false, scenario)
     await page.goto('/')
 
-    await expect(page.locator('.inspector')).toHaveCount(0)
-    await page.getByRole('button', { name: '工作详情' }).click()
-    const inspector = page.locator('.inspector')
+    const inspector = await ensureInspector(page)
     await expect(inspector.getByRole('tab', { name: '详细' })).toHaveAttribute('aria-selected', 'true')
     await expect(inspector).toContainText(wording)
     await expect(page.locator('.run-header')).not.toContainText(wording)
@@ -428,7 +441,8 @@ test('多尺寸、浅深色工作台视觉基准', async ({ browser }) => {
       await page.goto('/')
 
       await expect(page.locator('.agent-turn')).toHaveCount(2)
-      await expect(page.locator('.inspector')).toHaveCount(0)
+      await expect(page.locator('.inspector')).toBeVisible()
+      await expect(page.getByRole('region', { name: '产物' })).toContainText('文件变更')
       const activity = page.locator('.turn-activity').first()
       await expect(activity).not.toHaveAttribute('open', '')
       const activityHeight = await activity.locator(':scope > summary').evaluate((element) => element.getBoundingClientRect().height)
@@ -490,9 +504,7 @@ test('确认、检查、失败与浏览器恢复场景视觉基准', async ({ br
     await page.goto('/')
 
     if (scene.inspector) {
-      await page.getByRole('button', { name: '工作详情' }).click()
-      const inspector = page.locator('.inspector')
-      await expect(inspector).toBeVisible()
+      const inspector = await ensureInspector(page)
       if (scene.inspector === 'changes') await inspector.getByRole('tab', { name: /变更/ }).click()
     }
 

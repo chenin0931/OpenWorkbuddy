@@ -2,6 +2,7 @@ import type {
   ApprovalGrant,
   ApprovalRequest,
   JsonValue,
+  PermissionMode,
   PolicyDecision,
   RiskLevel,
   ToolCall,
@@ -204,7 +205,7 @@ function classifyShell(call: ToolCall): RiskClassification {
     }
   }
 
-  if (/\b(?:rm\s+-[^\n]*r|sudo|dd\s+if=|mkfs|diskutil\s+erase|shutdown|reboot)\b/.test(lower)) {
+  if (/\b(?:rm|rmdir|unlink|sudo|dd\s+if=|mkfs|diskutil\s+erase|shutdown|reboot)\b/.test(lower)) {
     return {
       riskLevel: 'high_risk_irreversible',
       reason: 'Command may irreversibly delete data or modify the operating system.',
@@ -234,6 +235,12 @@ function classifyShell(call: ToolCall): RiskClassification {
     idempotent: false,
     sendsDataOffDevice: false,
   }
+}
+
+export function isValidationShellCommand(command: string): boolean {
+  const trimmed = command.trim()
+  if (!trimmed || /[;&|><`\n\r]|\$\(|\$\{/.test(trimmed) || isForbiddenMacAutomationCommand(trimmed)) return false
+  return /^(?:(?:corepack\s+)?(?:pnpm|npm|yarn|bun)\s+(?:(?:run|exec)\s+)?(?:test|lint|typecheck|check|build)\b|(?:vitest|jest|pytest|eslint|xcodebuild|tsc\s+--noEmit|cargo\s+(?:test|check|build)|go\s+test|swift\s+test|git\s+diff\s+--check)\b)/i.test(trimmed)
 }
 
 /** Classifies a tool request without considering user grants. */
@@ -448,6 +455,30 @@ export function evaluateToolPolicy(input: PolicyEvaluationInput): PolicyDecision
   if (grant) return { effect: 'allow', ...classification, matchedGrantId: grant.id }
 
   return { effect: 'require_approval', ...classification }
+}
+
+/**
+ * Applies the user-selected convenience level after deterministic risk
+ * classification. Denials, destructive actions and mutating external actions
+ * are never relaxed; public search is the one explicit outbound-read exception.
+ */
+export function evaluateToolPolicyForMode(
+  input: PolicyEvaluationInput,
+  mode: PermissionMode,
+): PolicyDecision {
+  const decision = evaluateToolPolicy(input)
+  if (decision.effect !== 'require_approval' || mode === 'cautious') return decision
+
+  const command = stringArgument(input.call.arguments, 'command', 'cmd') ?? ''
+  const balancedAutomatic = decision.ruleId === 'filesystem.write'
+    || decision.ruleId === 'network.search-with-outgoing-query'
+    || (decision.ruleId === 'shell.unknown-write' && isValidationShellCommand(command))
+
+  if (balancedAutomatic) return { ...decision, effect: 'allow', ruleId: `${decision.ruleId}.permission-${mode}` }
+  if (mode === 'autonomous' && decision.riskLevel === 'reversible_write' && !decision.sendsDataOffDevice) {
+    return { ...decision, effect: 'allow', ruleId: `${decision.ruleId}.permission-autonomous` }
+  }
+  return decision
 }
 
 export interface ApprovalRequestInput {

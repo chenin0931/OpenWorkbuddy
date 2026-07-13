@@ -3,7 +3,7 @@ import { constants } from 'node:fs'
 import { lstat, open, realpath } from 'node:fs/promises'
 import { isAbsolute, relative, resolve, sep } from 'node:path'
 import type { ApprovalRequest, ApprovalResponse, JsonValue, MemoryEntry, RunEvent, TaskStep, ToolCall, ToolDescriptor, VerificationSummary } from '@onmyworkbuddy/contracts'
-import { createApprovalRequest, evaluateCompletionGate, evaluateToolPolicy, resolveApproval } from '@onmyworkbuddy/core'
+import { createApprovalRequest, evaluateCompletionGate, evaluateToolPolicy, evaluateToolPolicyForMode, resolveApproval } from '@onmyworkbuddy/core'
 import type { AppDatabase } from './database'
 import type { ArtifactStore } from './artifact-store'
 import type { ChromeBridge } from './chrome-bridge'
@@ -158,7 +158,8 @@ export class ToolBroker {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     }
-    const baseDecision = evaluateToolPolicy({ call, descriptor })
+    const permissionMode = this.database.getSetting<any>('appSettings', {}).permissionMode ?? 'balanced'
+    const baseDecision = evaluateToolPolicyForMode({ call, descriptor }, permissionMode)
     const memoryDisabled = tool.id === 'memory_propose' && this.database.getSetting<any>('appSettings', {}).memoryEnabled === false
     const readOnlyViolation = readOnlyRun(rawRun) && (
       tool.risk !== 'read' ||

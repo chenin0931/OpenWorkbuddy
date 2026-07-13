@@ -56,6 +56,26 @@ function sourcesFor(detail: RunDetailView): SourceItem[] {
   return [...items.values()]
 }
 
+const INTERNAL_ARTIFACT_KINDS = new Set(['attachment', 'file_snapshot', 'checkpoint'])
+
+export function isUserVisibleArtifact(artifact: { kind?: string; mime?: unknown; mediaType?: unknown }): boolean {
+  const kind = String(artifact.kind ?? '')
+  if (INTERNAL_ARTIFACT_KINDS.has(kind) || kind === 'diff') return false
+  if (kind === 'final_output') return true
+  const mediaType = String(artifact.mime ?? artifact.mediaType ?? '')
+  return kind === 'tool_result' && mediaType.startsWith('image/')
+}
+
+function visibleOutputs(detail: RunDetailView) {
+  return detail.artifacts.filter(isUserVisibleArtifact)
+}
+
+function artifactKindLabel(kind?: string): string {
+  if (kind === 'final_output') return '最终产物'
+  if (kind === 'tool_result') return '生成内容'
+  return '文件'
+}
+
 function Section({ title, icon, children }: { title: string; icon: IconName; children: ReactNode }) {
   return <section className="inspector-section"><h3><Icon name={icon} size={15} />{title}</h3>{children}</section>
 }
@@ -88,7 +108,7 @@ function DetailsPanel({ detail, snapshot, onBindChrome, onOpenSettings }: Pick<W
       <div className="context-list">
         {workspace && <div><span className="context-icon"><Icon name="folder" size={14} /></span><span><strong>{workspace.name}</strong><small>{shortPath(workspace.path)}</small></span></div>}
         {model && <div><span className="context-icon"><Icon name="layers" size={14} /></span><span><strong>{model.name}</strong><small>{model.modelId}</small></span></div>}
-        <div><span className="context-icon trusted"><Icon name="shield" size={14} /></span><span><strong>本地权限</strong><small>读取自动 · 写入检查 · 外部操作确认</small></span></div>
+        <div><span className="context-icon trusted"><Icon name="shield" size={14} /></span><span><strong>本地权限</strong><small>{snapshot.settings.permissionMode === 'cautious' ? '谨慎' : snapshot.settings.permissionMode === 'autonomous' ? '高效' : '平衡'} · 外部操作仍需确认</small></span></div>
       </div>
     </details>
   </>
@@ -106,12 +126,31 @@ function ActivityPanel({ detail }: { detail: RunDetailView }) {
 }
 
 function ChangesPanel({ detail, onRevealArtifact, onUndoChange, onPreview }: Pick<WorkInspectorProps, 'detail' | 'onRevealArtifact' | 'onUndoChange'> & { onPreview: (value: { name: string; text: string; truncated: boolean }) => void }) {
-  const outputs = detail.artifacts.filter((artifact) => artifact.kind !== 'diff')
+  const outputs = visibleOutputs(detail)
   return <>
     {detail.diffs.length > 0 && <Section title="文件变更" icon="edit"><div className="file-change-list">{detail.diffs.map((diff) => <div key={diff.id}><Icon name="file" /><span><strong>{diff.path.split('/').at(-1)}</strong><small>{shortPath(diff.path)}</small></span><em className="additions">+{diff.additions ?? 0}</em><em className="deletions">−{diff.deletions ?? 0}</em><button type="button" className="text-button" onClick={async () => { const result = await bridge.getArtifactText(diff.id); const value = result && typeof result === 'object' ? result as JsonRecord : {}; onPreview({ name: diff.path.split('/').at(-1) ?? 'Diff', text: String(value.text ?? ''), truncated: value.truncated === true }) }}>查看</button><button type="button" className="text-button" onClick={() => onUndoChange(diff.id)}>撤销</button></div>)}</div></Section>}
-    {outputs.length > 0 && <Section title="输出" icon="file"><div className="artifact-list">{outputs.map((artifact) => <button type="button" key={artifact.id} onClick={() => onRevealArtifact(artifact.id)}><span className="artifact-icon"><Icon name="file" /></span><span><strong>{artifact.name}</strong><small>{artifact.kind ?? '文件'} {formatBytes(artifact.size)}</small></span><Icon name="external" size={14} /></button>)}</div></Section>}
+    {outputs.length > 0 && <Section title="输出" icon="file"><div className="artifact-list">{outputs.map((artifact) => <button type="button" key={artifact.id} onClick={() => onRevealArtifact(artifact.id)}><span className="artifact-icon"><Icon name="file" /></span><span><strong>{artifact.name}</strong><small>{artifactKindLabel(artifact.kind)} {formatBytes(artifact.size)}</small></span><Icon name="external" size={14} /></button>)}</div></Section>}
     {!detail.diffs.length && !outputs.length && <EmptyState compact icon="edit" title="没有文件或输出" description="有实际变更或生成文件后会显示在这里。" />}
   </>
+}
+
+function ArtifactShelf({ detail, onRevealArtifact, onOpenChanges }: Pick<WorkInspectorProps, 'detail' | 'onRevealArtifact'> & { onOpenChanges: () => void }) {
+  const outputs = visibleOutputs(detail)
+  const total = outputs.length + detail.diffs.length
+  return (
+    <section className="inspector-artifact-shelf" aria-label="产物">
+      <header><span><Icon name="file" size={15} /><strong>产物</strong></span>{total > 0 && <em>{total}</em>}</header>
+      {total === 0 ? (
+        <p>Agent 生成的文件、报告、截图和变更会集中在这里。</p>
+      ) : (
+        <div className="artifact-shelf-list">
+          {outputs.slice(0, 3).map((artifact) => <button type="button" key={artifact.id} onClick={() => onRevealArtifact(artifact.id)}><span className="artifact-shelf-icon"><Icon name="file" size={14} /></span><span><strong>{artifact.name}</strong><small>{artifactKindLabel(artifact.kind)} {formatBytes(artifact.size)}</small></span><Icon name="external" size={13} /></button>)}
+          {detail.diffs.length > 0 && <button type="button" onClick={onOpenChanges}><span className="artifact-shelf-icon change"><Icon name="edit" size={14} /></span><span><strong>文件变更</strong><small>{detail.diffs.length} 项可查看或撤销</small></span><Icon name="arrowRight" size={13} /></button>}
+          {outputs.length > 3 && <button type="button" className="artifact-shelf-more" onClick={onOpenChanges}>查看另外 {outputs.length - 3} 项产物</button>}
+        </div>
+      )}
+    </section>
+  )
 }
 
 export function WorkInspector(props: WorkInspectorProps) {
@@ -119,11 +158,12 @@ export function WorkInspector(props: WorkInspectorProps) {
   const [tab, setTab] = useState<WorkInspectorTab>(requestedTab)
   const [diffPreview, setDiffPreview] = useState<{ name: string; text: string; truncated: boolean }>()
   const [width, setWidth] = usePersistentPanelWidth('workbuddy.inspector-width')
+  const outputs = useMemo(() => visibleOutputs(detail), [detail])
   const available = useMemo(() => ({
     details: true,
-    changes: detail.diffs.length > 0 || detail.artifacts.length > 0,
+    changes: detail.diffs.length > 0 || outputs.length > 0,
     activity: detail.steps.length > 0 || detail.toolCalls.length > 0 || detail.approvalHistory.length > 0,
-  }), [detail])
+  }), [detail, outputs.length])
 
   useEffect(() => { setTab(available[requestedTab] ? requestedTab : 'details') }, [available, requestedTab])
 
@@ -136,7 +176,8 @@ export function WorkInspector(props: WorkInspectorProps) {
   return (
     <aside className="inspector" style={{ width }}>
       <PanelResizer width={width} onWidthChange={setWidth} />
-      <Tabs ariaLabel="工作详情" value={tab} onValueChange={setTab} tabListClassName="inspector-tabs" tabPanelClassName="inspector-content" items={items} />
+      <ArtifactShelf detail={detail} onRevealArtifact={props.onRevealArtifact} onOpenChanges={() => setTab('changes')} />
+      <Tabs className="inspector-tab-shell" ariaLabel="工作详情" value={tab} onValueChange={setTab} tabListClassName="inspector-tabs" tabPanelClassName="inspector-content" items={items} />
       <Modal open={Boolean(diffPreview)} onClose={() => setDiffPreview(undefined)} title={diffPreview?.name ?? '文件变更'} description={diffPreview?.truncated ? '这里只显示部分内容，可在 Finder 中打开完整文件。' : 'WorkBuddy 保存的本地文件变更。'} wide><pre className="diff-preview">{diffPreview?.text}</pre></Modal>
     </aside>
   )

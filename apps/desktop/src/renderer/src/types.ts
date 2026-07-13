@@ -214,12 +214,15 @@ export interface ChromeStatusView extends JsonRecord {
   }>
 }
 
+export type PermissionMode = 'cautious' | 'balanced' | 'autonomous'
+
 export interface SettingsView extends JsonRecord {
   onboardingCompleted?: boolean
   theme?: 'system' | 'light' | 'dark'
   language?: string
   memoryEnabled?: boolean
   defaultExecutionMode?: 'plan' | 'execute'
+  permissionMode?: PermissionMode
   maxIterations?: number
   maxRunMinutes?: number
   maxSubagents?: number

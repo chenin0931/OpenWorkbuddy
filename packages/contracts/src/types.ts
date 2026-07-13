@@ -403,6 +403,7 @@ export interface AppSettings {
   locale: string
   theme: 'system' | 'light' | 'dark'
   defaultExecutionMode: 'plan' | 'execute'
+  permissionMode: PermissionMode
   defaultModelProfileId?: string
   subagentModelProfileId?: string
   launchAtLogin: boolean
@@ -412,6 +413,8 @@ export interface AppSettings {
   defaultRunLimits: RunLimits
   timezone: string
 }
+
+export type PermissionMode = 'cautious' | 'balanced' | 'autonomous'
 
 export interface PublicError {
   code: string
