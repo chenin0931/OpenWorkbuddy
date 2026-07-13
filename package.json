@@ -13,6 +13,8 @@
     "build:native:universal": "./scripts/build-native-universal.sh",
     "package:extension": "pnpm --filter @onmyworkbuddy/chrome-extension build && pnpm --filter @onmyworkbuddy/chrome-extension package:zip",
     "package:mac": "pnpm build && pnpm build:native && pnpm package:extension && pnpm --filter @onmyworkbuddy/desktop package:mac",
+    "rebuild:native:test": "node scripts/rebuild-better-sqlite3.mjs",
+    "rebuild:native:electron:x64": "pnpm --filter @onmyworkbuddy/desktop rebuild:electron:x64",
     "test": "pnpm -r test",
     "test:online:kimi": "pnpm --filter @onmyworkbuddy/desktop test:online:kimi",
     "test:online:kimi:app": "pnpm --filter @onmyworkbuddy/desktop test:online:kimi:app",

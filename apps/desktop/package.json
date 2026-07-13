@@ -11,6 +11,7 @@
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.web.json --noEmit",
+    "pretest": "node ../../scripts/rebuild-better-sqlite3.mjs",
     "test": "vitest run",
     "test:online:kimi": "node scripts/kimi-online-smoke.mjs",
     "test:online:kimi:app": "electron-rebuild -v 43.1.0 -a $(node -p process.arch) -m . -o better-sqlite3 --force && pnpm build && node scripts/kimi-online-smoke.mjs --app",
