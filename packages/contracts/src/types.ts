@@ -106,8 +106,10 @@ export type TaskStepStatus = 'pending' | 'in_progress' | 'blocked' | 'completed'
 export type MessageRole = 'user' | 'assistant' | 'system'
 
 export interface RunLimits {
-  maxModelTurns: number
-  maxDurationMs: number
+  maxModelTurnsPerTurn: number
+  maxTotalModelTurns: number
+  maxDurationMsPerTurn: number
+  maxTotalDurationMs: number
   maxSubagents: number
   maxParallelReadTools: number
 }

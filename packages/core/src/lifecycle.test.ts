@@ -23,7 +23,7 @@ function run(status: Run['status']): Run {
       modelId: 'gpt-test',
       capabilities: { contextWindow: 100_000, maxOutputTokens: 8_000, toolCalling: true, vision: false, reasoning: true, promptCaching: true },
     },
-    limits: { maxModelTurns: 60, maxDurationMs: 7_200_000, maxSubagents: 3, maxParallelReadTools: 4 },
+    limits: { maxModelTurnsPerTurn: 60, maxTotalModelTurns: 180, maxDurationMsPerTurn: 7_200_000, maxTotalDurationMs: 21_600_000, maxSubagents: 3, maxParallelReadTools: 4 },
     modelTurns: 0,
     createdAt: now,
     updatedAt: now,

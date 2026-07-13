@@ -8,7 +8,7 @@ import type { ArtifactStore } from './artifact-store'
 import type { SecretStore } from './secret-store'
 import type { ToolBroker } from './tool-broker'
 import { BASE_SYSTEM_PROMPT, publicToolDescriptors, TOOL_DEFINITIONS } from './tool-registry'
-import { DEFAULT_LIMITS, modelSnapshot, presentArtifact, presentMemory, presentModel, presentRun, presentRunDetail, presentSkill } from './presenters'
+import { DEFAULT_LIMITS, modelSnapshot, normalizeRunLimits, presentArtifact, presentMemory, presentModel, presentRun, presentRunDetail, presentSkill } from './presenters'
 import type { AgentHostBridge, ToolRunnerBridge } from './worker-bridge'
 import { selectMemoriesForRun } from './memory-selection'
 import { buildDurableCheckpoint } from './context-checkpoint'
@@ -83,7 +83,7 @@ export class RunCoordinator {
   async create(input: { workspaceId: string; objective: string; accessMode?: RunAccessMode; mode?: 'plan' | 'execute'; title?: string; modelProfileId?: string; limits?: any; parentRunId?: string; readOnly?: boolean; fixedModelSnapshot?: any; attachmentIds?: string[] }): Promise<RunDetail> {
     const profile = this.selectProfile(input.modelProfileId)
     const settings = this.database.getSetting<any>('appSettings', {})
-    const limits = { ...DEFAULT_LIMITS, ...(settings.defaultRunLimits ?? {}), ...(input.limits ?? {}) }
+    const limits = normalizeRunLimits({ ...(settings.defaultRunLimits ?? {}), ...(input.limits ?? {}) })
     const raw = this.database.createRun({
       prompt: input.objective,
       title: input.title ?? input.objective.slice(0, 48),
@@ -121,18 +121,28 @@ export class RunCoordinator {
       this.database.updateRun(runId, { outcome: null, summary: '', error: null, finishedAt: null })
       this.database.markRunTurnStarted(runId, 'initial')
       raw = this.database.getRun(runId)
+    } else if (prompt !== undefined && !this.database.getCurrentRunTurnStartedAt(runId)) {
+      this.database.markRunTurnStarted(runId, 'follow_up')
+      raw = this.database.getRun(runId)
     }
     if (!raw || !STARTABLE_RUN_STATUSES.has(raw.status)) throw new Error(`任务当前状态不能启动：${raw?.status ?? 'missing'}`)
-    const limits = { ...DEFAULT_LIMITS, ...(raw.limits ?? {}) }
+    const limits = normalizeRunLimits(raw.limits)
     const usage = this.database.getRunBudgetUsage(runId)
-    const remainingTurns = Math.max(0, limits.maxModelTurns - usage.modelTurns)
-    const remainingDurationMs = Math.max(0, limits.maxDurationMs - usage.activeDurationMs)
+    const turnUsage = this.database.getRunTurnBudgetUsage(runId)
+    const remainingTurnTurns = Math.max(0, limits.maxModelTurnsPerTurn - turnUsage.modelTurns)
+    const remainingTotalTurns = Math.max(0, limits.maxTotalModelTurns - usage.modelTurns)
+    const remainingTurns = Math.min(remainingTurnTurns, remainingTotalTurns)
+    const remainingTurnDurationMs = Math.max(0, limits.maxDurationMsPerTurn - turnUsage.activeDurationMs)
+    const remainingTotalDurationMs = Math.max(0, limits.maxTotalDurationMs - usage.activeDurationMs)
+    const remainingDurationMs = Math.min(remainingTurnDurationMs, remainingTotalDurationMs)
     if (remainingTurns <= 0) {
-      this.finishBudgetExhausted(runId, 'model_turns', '任务已用尽累计模型回合预算。')
+      const total = remainingTotalTurns <= 0
+      this.finishBudgetExhausted(runId, 'model_turns', total ? '任务已用尽总模型回合预算，请在设置中提高总预算后继续。' : '本轮已用尽模型回合预算；发送一条新消息即可开始下一轮。', total ? 'total' : 'turn')
       return
     }
     if (remainingDurationMs <= 0) {
-      this.finishBudgetExhausted(runId, 'duration', '任务已用尽累计执行时长预算。')
+      const total = remainingTotalDurationMs <= 0
+      this.finishBudgetExhausted(runId, 'duration', total ? '任务已用尽总执行时长预算，请在设置中提高总预算后继续。' : '本轮已用尽执行时长预算；发送一条新消息即可开始下一轮。', total ? 'total' : 'turn')
       return
     }
     try {
@@ -251,7 +261,7 @@ export class RunCoordinator {
     if (TERMINAL_RUN_STATUSES.has(raw.status)) throw new Error('已结束的任务不能暂停')
     this.host.cancelRun(runId)
     this.runner.cancelRun(runId)
-    this.database.stopRunExecution(runId)
+    this.database.finishRunTurn(runId, 'cancelled')
     this.database.transitionRun(runId, 'paused', { outcome: null, finishedAt: null })
     this.database.cancelPendingRunWork(runId, '任务已暂停；未完成工具和审批已失效')
     this.broker.rejectRunApprovals(runId, '任务已暂停；审批已失效')
@@ -395,7 +405,7 @@ export class RunCoordinator {
       // terminal event so it cannot overwrite the user-visible control state.
       if (!raw || ['paused', 'cancelled', 'completed', 'failed'].includes(raw.status)) return
       const failed = Boolean(event.errorMessage)
-      this.database.stopRunExecution(runId)
+      this.database.finishRunTurn(runId, failed ? 'failed' : 'completed')
       if (failed) {
         this.database.transitionRun(runId, 'failed', {
           outcome: null,
@@ -430,7 +440,7 @@ export class RunCoordinator {
     if (event.type === 'agent.failed') {
       const raw = this.database.getRun(runId)
       if (!raw || ['paused', 'cancelled', 'completed', 'failed'].includes(raw.status)) return
-      this.database.stopRunExecution(runId)
+      this.database.finishRunTurn(runId, 'failed')
       this.database.transitionRun(runId, 'failed', { outcome: null, error: event.error, finishedAt: new Date().toISOString() })
       this.emitRun(runId)
       const failed = this.getRun(runId)
@@ -442,23 +452,28 @@ export class RunCoordinator {
     this.database.appendRunEvent(runId, event.type, event.type, event)
   }
 
-  private finishBudgetExhausted(runId: string, budget: 'model_turns' | 'duration', message: string): void {
+  private finishBudgetExhausted(runId: string, budget: 'model_turns' | 'duration', message: string, scope?: 'turn' | 'total'): void {
     const raw = this.database.getRun(runId)
     if (!raw || ['completed', 'failed', 'cancelled'].includes(raw.status)) return
-    this.database.stopRunExecution(runId)
-    const error = budget === 'model_turns'
-      ? `RUN_BUDGET_MODEL_TURNS_EXHAUSTED: ${message}`
-      : `RUN_BUDGET_DURATION_EXHAUSTED: ${message}`
-    this.database.transitionRun(runId, 'failed', { outcome: null, error, finishedAt: new Date().toISOString() })
+    const limits = normalizeRunLimits(raw.limits)
+    const usageBeforeFinish = this.database.getRunBudgetUsage(runId)
+    const turnUsageBeforeFinish = this.database.getRunTurnBudgetUsage(runId)
+    const resolvedScope = scope ?? (budget === 'model_turns'
+      ? (usageBeforeFinish.modelTurns >= limits.maxTotalModelTurns ? 'total' : 'turn')
+      : (usageBeforeFinish.activeDurationMs >= limits.maxTotalDurationMs ? 'total' : 'turn'))
+    this.database.finishRunTurn(runId, 'budget_exhausted')
+    this.database.transitionRun(runId, 'waiting_user', { outcome: null, error: null, finishedAt: null })
     this.database.appendRunEvent(runId, 'run.budget_exhausted', message, {
       budget,
-      limits: raw.limits,
+      scope: resolvedScope,
+      limits,
       usage: this.database.getRunBudgetUsage(runId),
+      turnUsage: turnUsageBeforeFinish,
     }, 'warning')
     this.emitRun(runId)
-    const failed = this.getRun(runId)
-    this.notify('任务预算已用尽', failed.title)
-    for (const resolve of this.completionWaiters.get(runId) ?? []) resolve(failed)
+    const waiting = this.getRun(runId)
+    this.notify('任务需要继续', waiting.title)
+    for (const resolve of this.completionWaiters.get(runId) ?? []) resolve(waiting)
     this.completionWaiters.delete(runId)
   }
 

@@ -42,7 +42,7 @@ async function fixture(): Promise<{
   return { directory, database, coordinator, host, runner, artifacts, broadcast }
 }
 
-describe('task-wide run budgets', () => {
+describe('turn-aware run budgets', () => {
   it('uses an explicit subagent model default and otherwise inherits the parent snapshot', async () => {
     const { database, coordinator } = await fixture()
     const parentProfileId = database.saveModelProfile({ name: 'Parent', provider: 'openai', modelId: 'parent-model' })
@@ -64,18 +64,18 @@ describe('task-wide run budgets', () => {
     database.close()
   })
 
-  it('ends as failed without inventing a completion verdict when the turn budget is exhausted', async () => {
+  it('waits for a new user turn without inventing a completion verdict when the turn budget is exhausted', async () => {
     const { database, coordinator, host } = await fixture()
-    const run = database.createRun({ prompt: 'Keep working', limits: { maxModelTurns: 2, maxDurationMs: 60_000 } })
+    const run = database.createRun({ prompt: 'Keep working', limits: { maxModelTurnsPerTurn: 2, maxTotalModelTurns: 6, maxDurationMsPerTurn: 60_000, maxTotalDurationMs: 180_000 } })
+    database.markRunTurnStarted(run.id, 'initial')
     database.incrementRunModelTurns(run.id)
     database.incrementRunModelTurns(run.id)
 
     await coordinator.start(run.id)
 
     expect(host.startRun).not.toHaveBeenCalled()
-    expect(database.getRun(run.id)).toMatchObject({ status: 'failed', outcome: null, modelTurns: 2 })
-    expect(database.getRun(run.id)?.error).toContain('RUN_BUDGET_MODEL_TURNS_EXHAUSTED')
-    expect(database.getRun(run.id)?.events.some((event: any) => event.type === 'run.budget_exhausted')).toBe(true)
+    expect(database.getRun(run.id)).toMatchObject({ status: 'waiting_user', outcome: null, modelTurns: 2, error: null })
+    expect(database.getRun(run.id)?.events.some((event: any) => event.type === 'run.budget_exhausted' && event.payload.scope === 'turn')).toBe(true)
     database.close()
   })
 
@@ -168,17 +168,49 @@ describe('task-wide run budgets', () => {
     database.close()
   })
 
-  it('turns an exhausted terminal follow-up into a current failed result instead of stranding it under the old completion', async () => {
-    const { database, coordinator, host } = await fixture()
-    const run = database.createRun({ prompt: 'Initial', limits: { maxModelTurns: 1, maxDurationMs: 60_000 } })
+  it('gives an exhausted terminal task a fresh per-turn budget on follow-up', async () => {
+    const { directory, database, coordinator, host } = await fixture()
+    const profileId = database.saveModelProfile({ name: 'Default', provider: 'openai', modelId: 'gpt-test', isDefault: true }, Buffer.from('encrypted'))
+    const workspaceId = database.addWorkspace(directory, 'Workspace')
+    const run = database.createRun({
+      prompt: 'Initial', workspaceId, modelProfileId: profileId,
+      modelSnapshot: { profileId, provider: 'openai', modelId: 'gpt-test' },
+      limits: { maxModelTurnsPerTurn: 1, maxTotalModelTurns: 3, maxDurationMsPerTurn: 60_000, maxTotalDurationMs: 180_000 },
+    })
+    database.markRunTurnStarted(run.id, 'initial')
     database.incrementRunModelTurns(run.id)
+    database.finishRunTurn(run.id, 'completed')
     database.updateRun(run.id, { status: 'completed', outcome: 'verified', summary: 'old verified result', finishedAt: now() })
 
     await coordinator.sendMessage(run.id, 'Follow up after budget')
 
-    expect(host.startRun).not.toHaveBeenCalled()
-    expect(database.getRun(run.id)).toMatchObject({ status: 'failed', outcome: null, summary: '' })
+    expect(host.startRun).toHaveBeenCalledOnce()
+    expect(host.startRun.mock.calls[0]?.[0]).toMatchObject({ maxTurns: 1 })
+    expect(database.getRun(run.id)).toMatchObject({ status: 'running', outcome: null, summary: '' })
     expect(database.getRun(run.id)?.messages.at(-1)).toMatchObject({ role: 'user', content: 'Follow up after budget' })
+    database.close()
+  })
+
+  it('keeps the full 60-turn follow-up allowance after a 46-turn first request', async () => {
+    const { directory, database, coordinator, host } = await fixture()
+    const profileId = database.saveModelProfile({ name: 'Default', provider: 'openai', modelId: 'gpt-test', isDefault: true }, Buffer.from('encrypted'))
+    const workspaceId = database.addWorkspace(directory, 'G318')
+    const run = database.createRun({
+      prompt: 'Create the guide', workspaceId, modelProfileId: profileId,
+      modelSnapshot: { profileId, provider: 'openai', modelId: 'gpt-test' },
+      limits: { maxModelTurnsPerTurn: 60, maxTotalModelTurns: 180, maxDurationMsPerTurn: 7_200_000, maxTotalDurationMs: 21_600_000 },
+    })
+    database.markRunTurnStarted(run.id, 'initial')
+    database.incrementRunModelTurns(run.id, 46)
+    database.finishRunTurn(run.id, 'completed')
+    database.updateRun(run.id, { status: 'completed', outcome: 'partial', finishedAt: now() })
+
+    await coordinator.sendMessage(run.id, 'Convert the Markdown to PDF')
+
+    expect(host.startRun.mock.calls[0]?.[0]).toMatchObject({ maxTurns: 60 })
+    expect(database.getRunBudgetUsage(run.id).modelTurns).toBe(46)
+    expect(database.getRunTurnBudgetUsage(run.id).modelTurns).toBe(0)
+    database.stopRunExecution(run.id)
     database.close()
   })
 

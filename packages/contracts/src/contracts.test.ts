@@ -131,7 +131,7 @@ describe('renderer contracts', () => {
           profileId: 'model-1', provider: 'openai', modelId: 'gpt-test',
           capabilities: { contextWindow: 128_000, maxOutputTokens: 16_384, toolCalling: true, vision: false, reasoning: false, promptCaching: true },
         },
-        limits: { maxModelTurns: 60, maxDurationMs: 7_200_000, maxSubagents: 3, maxParallelReadTools: 4 },
+        limits: { maxModelTurnsPerTurn: 60, maxTotalModelTurns: 180, maxDurationMsPerTurn: 7_200_000, maxTotalDurationMs: 21_600_000, maxSubagents: 3, maxParallelReadTools: 4 },
         modelTurns: 2, createdAt: now, updatedAt: now,
       },
       steps: [],

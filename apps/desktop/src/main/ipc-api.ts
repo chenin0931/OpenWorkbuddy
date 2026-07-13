@@ -14,7 +14,7 @@ import type { SkillService } from './skill-service'
 import type { AutomationService } from './automation-service'
 import type { McpOAuthService } from './mcp-oauth'
 import type { ArtifactStore } from './artifact-store'
-import { DEFAULT_SETTINGS, presentArtifact, presentAudit, presentChromeGrant, presentMcp, presentMemory, presentModel, presentRunSummary, presentWorkspace } from './presenters'
+import { DEFAULT_SETTINGS, normalizeRunLimits, presentArtifact, presentAudit, presentChromeGrant, presentMcp, presentMemory, presentModel, presentRunSummary, presentWorkspace } from './presenters'
 import { CapabilityPackageService, type ParsedCapabilityPackage } from './capability-package-service'
 import { getModelCatalog } from './model-providers'
 
@@ -44,7 +44,8 @@ export class IpcApi {
   }
 
   private settings(): AppSettings {
-    return { ...DEFAULT_SETTINGS, ...this.database.getSetting<Partial<AppSettings>>('appSettings', {}) }
+    const stored = this.database.getSetting<Partial<AppSettings> & { defaultRunLimits?: any }>('appSettings', {})
+    return { ...DEFAULT_SETTINGS, ...stored, defaultRunLimits: normalizeRunLimits(stored.defaultRunLimits) }
   }
 
   private modelProfiles(): ModelProfile[] {

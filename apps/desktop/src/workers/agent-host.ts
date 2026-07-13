@@ -221,6 +221,8 @@ async function startRun(command: StartCommand): Promise<void> {
   let checkpointState: import('./context-checkpoint').MessageCheckpoint | undefined
   let turnActive = false
   let lastProgressAt = 0
+  let convergenceSteered = false
+  let finalizationSteered = false
   const toolDrafts = new Map<number, { toolName?: string; generatedChars: number }>()
   const toolLabel = (toolName?: string): string => command.tools.find((tool) => tool.id === toolName)?.label ?? toolName ?? '下一步操作'
   const publishProgress = (phase: 'thinking' | 'composing_tool', message: string, details: { toolName?: string; generatedChars?: number } = {}, force = false): void => {
@@ -291,7 +293,7 @@ async function startRun(command: StartCommand): Promise<void> {
     agent.abort()
   }
   const timeout = setTimeout(
-    () => exhaustBudget('duration', '任务已用尽累计执行时长预算。'),
+    () => exhaustBudget('duration', '本轮已用尽执行时长预算。已有结果已保留，可由用户继续。'),
     command.timeoutMs ?? 2 * 60 * 60 * 1000,
   )
   timers.set(command.runId, timeout)
@@ -303,7 +305,7 @@ async function startRun(command: StartCommand): Promise<void> {
   agent.subscribe(async (event: AgentEvent) => {
     if (event.type === 'turn_start') {
       if (turns >= (command.maxTurns ?? 60)) {
-        exhaustBudget('model_turns', '任务已用尽累计模型回合预算。')
+        exhaustBudget('model_turns', '本轮已用尽模型回合预算。已有结果已保留，可由用户继续。')
         return
       }
       turns += 1
@@ -315,6 +317,22 @@ async function startRun(command: StartCommand): Promise<void> {
     if (event.type === 'turn_end') {
       turnActive = false
       toolDrafts.clear()
+      const maxTurns = command.maxTurns ?? 60
+      if (!finalizationSteered && turns >= Math.max(1, maxTurns - 6)) {
+        finalizationSteered = true
+        agent.steer({
+          role: 'user',
+          content: '[系统预算提示] 本轮只剩最多 6 个模型回合。立即停止扩展探索，使用已有证据完成产物写入、必要验证、output_register 和最终总结；无法验证的内容明确列出。',
+          timestamp: Date.now(),
+        })
+      } else if (!convergenceSteered && turns >= Math.ceil(maxTurns * 0.8)) {
+        convergenceSteered = true
+        agent.steer({
+          role: 'user',
+          content: '[系统预算提示] 本轮模型回合预算已使用 80%。请收敛搜索和试错，优先完成核心产物与可观察验证。',
+          timestamp: Date.now(),
+        })
+      }
       return
     }
     if (event.type === 'message_update') {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { RunDetailSchema, type ModelProfile } from '@onmyworkbuddy/contracts'
-import { presentRunDetail } from './presenters'
+import { normalizeRunLimits, presentRunDetail } from './presenters'
 
 const now = '2026-07-11T12:00:00.000Z'
 
@@ -23,6 +23,19 @@ const model: ModelProfile = {
   createdAt: now,
   updatedAt: now,
 }
+
+describe('run limit migration', () => {
+  it('maps legacy task-wide keys to a per-turn allowance and a three-times total cap', () => {
+    expect(normalizeRunLimits({ maxModelTurns: 46, maxDurationMs: 60_000, maxSubagents: 2, maxParallelReadTools: 3 })).toEqual({
+      maxModelTurnsPerTurn: 46,
+      maxTotalModelTurns: 138,
+      maxDurationMsPerTurn: 60_000,
+      maxTotalDurationMs: 180_000,
+      maxSubagents: 2,
+      maxParallelReadTools: 3,
+    })
+  })
+})
 
 describe('run detail public projection', () => {
   it('drops empty assistant envelopes and exposes bounded, redacted tool evidence', () => {

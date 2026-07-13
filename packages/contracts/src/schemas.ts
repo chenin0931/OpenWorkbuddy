@@ -100,8 +100,10 @@ export const TaskStepStatusSchema = z.enum(['pending', 'in_progress', 'blocked',
 
 export const RunLimitsSchema = z
   .object({
-    maxModelTurns: z.number().int().min(1).max(1_000),
-    maxDurationMs: z.number().int().min(1_000).max(7 * 24 * 60 * 60 * 1_000),
+    maxModelTurnsPerTurn: z.number().int().min(1).max(1_000),
+    maxTotalModelTurns: z.number().int().min(1).max(10_000),
+    maxDurationMsPerTurn: z.number().int().min(1_000).max(7 * 24 * 60 * 60 * 1_000),
+    maxTotalDurationMs: z.number().int().min(1_000).max(30 * 24 * 60 * 60 * 1_000),
     maxSubagents: z.number().int().min(0).max(32),
     maxParallelReadTools: z.number().int().min(1).max(64),
   })

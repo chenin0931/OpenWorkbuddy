@@ -103,6 +103,18 @@ export class AppDatabase {
         updated_at TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS runs_updated_idx ON runs(updated_at DESC);
+      CREATE TABLE IF NOT EXISTS run_turns (
+        id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+        reason TEXT NOT NULL CHECK(reason IN ('initial','follow_up','legacy')),
+        status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','paused','completed','failed','budget_exhausted','cancelled')),
+        model_turns INTEGER NOT NULL DEFAULT 0,
+        active_duration_ms INTEGER NOT NULL DEFAULT 0,
+        active_segment_started_at TEXT,
+        started_at TEXT NOT NULL,
+        finished_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS run_turns_run_idx ON run_turns(run_id, started_at DESC);
       CREATE TABLE IF NOT EXISTS messages (
         id TEXT PRIMARY KEY,
         run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
@@ -512,16 +524,52 @@ export class AppDatabase {
   markRunTurnStarted(runId: string, reason: 'initial' | 'follow_up'): { turnId: string; startedAt: string } {
     const turnId = randomUUID()
     const startedAt = now()
-    this.db.prepare('INSERT INTO run_events(run_id,type,level,summary,payload_json,created_at) VALUES(?,?,?,?,?,?)')
-      .run(runId, 'run.turn_started', 'info', reason === 'initial' ? '任务首轮开始' : '新一轮对话开始', json({ turnId, reason, startedAt }), startedAt)
-    this.db.prepare('UPDATE runs SET updated_at=? WHERE id=?').run(startedAt, runId)
+    this.db.transaction(() => {
+      this.db.prepare("UPDATE run_turns SET status=CASE WHEN status='active' THEN 'completed' ELSE status END,finished_at=COALESCE(finished_at,?),active_segment_started_at=NULL WHERE run_id=? AND finished_at IS NULL")
+        .run(startedAt, runId)
+      this.db.prepare('INSERT INTO run_turns(id,run_id,reason,status,started_at) VALUES(?,?,?,?,?)')
+        .run(turnId, runId, reason, 'active', startedAt)
+      this.db.prepare('INSERT INTO run_events(run_id,type,level,summary,payload_json,created_at) VALUES(?,?,?,?,?,?)')
+        .run(runId, 'run.turn_started', 'info', reason === 'initial' ? '任务首轮开始' : '新一轮对话开始', json({ turnId, reason, startedAt }), startedAt)
+      this.db.prepare('UPDATE runs SET updated_at=? WHERE id=?').run(startedAt, runId)
+    })()
     return { turnId, startedAt }
   }
 
   getCurrentRunTurnStartedAt(runId: string): string | undefined {
+    const turn = this.db.prepare('SELECT started_at FROM run_turns WHERE run_id=? AND finished_at IS NULL ORDER BY started_at DESC LIMIT 1')
+      .get(runId) as { started_at?: string } | undefined
+    if (turn?.started_at) return turn.started_at
     const row = this.db.prepare("SELECT created_at FROM run_events WHERE run_id=? AND type='run.turn_started' ORDER BY id DESC LIMIT 1")
       .get(runId) as { created_at?: string } | undefined
     return row?.created_at
+  }
+
+  private ensureCurrentRunTurn(runId: string, fallbackStartedAt = now()): { id: string; startedAt: string } {
+    const current = this.db.prepare('SELECT id,started_at FROM run_turns WHERE run_id=? AND finished_at IS NULL ORDER BY started_at DESC LIMIT 1')
+      .get(runId) as { id?: string; started_at?: string } | undefined
+    if (current?.id && current.started_at) return { id: current.id, startedAt: current.started_at }
+    const legacy = this.db.prepare("SELECT created_at,payload_json FROM run_events WHERE run_id=? AND type='run.turn_started' ORDER BY id DESC LIMIT 1")
+      .get(runId) as { created_at?: string; payload_json?: string } | undefined
+    const id = randomUUID()
+    const startedAt = legacy?.created_at ?? fallbackStartedAt
+    this.db.prepare('INSERT INTO run_turns(id,run_id,reason,status,started_at) VALUES(?,?,?,?,?)')
+      .run(id, runId, legacy ? 'legacy' : 'initial', 'active', startedAt)
+    return { id, startedAt }
+  }
+
+  getRunTurnBudgetUsage(id: string, at: Date = new Date()): { turnId?: string; modelTurns: number; activeDurationMs: number; active: boolean } {
+    const row = this.db.prepare('SELECT id,model_turns,active_duration_ms,active_segment_started_at FROM run_turns WHERE run_id=? AND finished_at IS NULL ORDER BY started_at DESC LIMIT 1')
+      .get(id) as any
+    if (!row) return { modelTurns: 0, activeDurationMs: 0, active: false }
+    const segmentStartedAt = typeof row.active_segment_started_at === 'string' ? Date.parse(row.active_segment_started_at) : Number.NaN
+    const segmentMs = Number.isFinite(segmentStartedAt) ? Math.max(0, at.getTime() - segmentStartedAt) : 0
+    return {
+      turnId: row.id,
+      modelTurns: Math.max(0, Number(row.model_turns ?? 0)),
+      activeDurationMs: Math.max(0, Number(row.active_duration_ms ?? 0)) + segmentMs,
+      active: Number.isFinite(segmentStartedAt),
+    }
   }
 
   getRunBudgetUsage(id: string, at: Date = new Date()): { modelTurns: number; activeDurationMs: number; active: boolean } {
@@ -538,8 +586,13 @@ export class AppDatabase {
 
   beginRunExecution(id: string, at: Date = new Date()): { modelTurns: number; activeDurationMs: number; active: boolean } {
     const timestamp = at.toISOString()
-    this.db.prepare('UPDATE runs SET active_segment_started_at=COALESCE(active_segment_started_at,?),updated_at=? WHERE id=?')
-      .run(timestamp, timestamp, id)
+    const turn = this.ensureCurrentRunTurn(id, timestamp)
+    this.db.transaction(() => {
+      this.db.prepare('UPDATE runs SET active_segment_started_at=COALESCE(active_segment_started_at,?),updated_at=? WHERE id=?')
+        .run(timestamp, timestamp, id)
+      this.db.prepare("UPDATE run_turns SET active_segment_started_at=COALESCE(active_segment_started_at,?),status='active' WHERE id=?")
+        .run(timestamp, turn.id)
+    })()
     return this.getRunBudgetUsage(id, at)
   }
 
@@ -547,17 +600,33 @@ export class AppDatabase {
     const timestamp = at.toISOString()
     this.db.transaction(() => {
       const usage = this.getRunBudgetUsage(id, at)
+      const turnUsage = this.getRunTurnBudgetUsage(id, at)
       this.db.prepare('UPDATE runs SET active_duration_ms=?,active_segment_started_at=NULL,updated_at=? WHERE id=?')
         .run(usage.activeDurationMs, timestamp, id)
+      if (turnUsage.turnId) {
+        this.db.prepare('UPDATE run_turns SET active_duration_ms=?,active_segment_started_at=NULL WHERE id=?')
+          .run(turnUsage.activeDurationMs, turnUsage.turnId)
+      }
     })()
     return this.getRunBudgetUsage(id, at)
   }
 
   incrementRunModelTurns(id: string, count = 1): number {
     if (!Number.isInteger(count) || count <= 0) throw new RangeError('count must be a positive integer')
-    const result = this.db.prepare('UPDATE runs SET model_turns=model_turns+?,updated_at=? WHERE id=?').run(count, now(), id)
-    if (result.changes !== 1) throw new Error('任务不存在')
+    const turn = this.ensureCurrentRunTurn(id)
+    this.db.transaction(() => {
+      const result = this.db.prepare('UPDATE runs SET model_turns=model_turns+?,updated_at=? WHERE id=?').run(count, now(), id)
+      if (result.changes !== 1) throw new Error('任务不存在')
+      this.db.prepare('UPDATE run_turns SET model_turns=model_turns+? WHERE id=?').run(count, turn.id)
+    })()
     return Number((this.db.prepare('SELECT model_turns FROM runs WHERE id=?').get(id) as any).model_turns)
+  }
+
+  finishRunTurn(id: string, status: 'completed' | 'failed' | 'budget_exhausted' | 'cancelled', at: Date = new Date()): void {
+    const timestamp = at.toISOString()
+    this.stopRunExecution(id, at)
+    this.db.prepare('UPDATE run_turns SET status=?,finished_at=?,active_segment_started_at=NULL WHERE run_id=? AND finished_at IS NULL')
+      .run(status, timestamp, id)
   }
 
   addMessage(runId: string, role: string, content: string, metadata: Json = {}): string {

@@ -22,7 +22,30 @@ import type {
   Workspace,
 } from '@onmyworkbuddy/contracts'
 
-export const DEFAULT_LIMITS: RunLimits = { maxModelTurns: 60, maxDurationMs: 2 * 60 * 60 * 1000, maxSubagents: 3, maxParallelReadTools: 4 }
+export const DEFAULT_LIMITS: RunLimits = {
+  maxModelTurnsPerTurn: 60,
+  maxTotalModelTurns: 180,
+  maxDurationMsPerTurn: 2 * 60 * 60 * 1000,
+  maxTotalDurationMs: 6 * 60 * 60 * 1000,
+  maxSubagents: 3,
+  maxParallelReadTools: 4,
+}
+
+/** Accept persisted 0.3.x settings while exposing only the turn-aware shape. */
+export function normalizeRunLimits(value: any = {}): RunLimits {
+  const legacyTurns = Number(value.maxModelTurns)
+  const legacyDuration = Number(value.maxDurationMs)
+  const maxModelTurnsPerTurn = Number(value.maxModelTurnsPerTurn ?? (Number.isFinite(legacyTurns) ? legacyTurns : DEFAULT_LIMITS.maxModelTurnsPerTurn))
+  const maxDurationMsPerTurn = Number(value.maxDurationMsPerTurn ?? (Number.isFinite(legacyDuration) ? legacyDuration : DEFAULT_LIMITS.maxDurationMsPerTurn))
+  return {
+    maxModelTurnsPerTurn,
+    maxTotalModelTurns: Number(value.maxTotalModelTurns ?? Math.max(maxModelTurnsPerTurn, Number.isFinite(legacyTurns) ? legacyTurns * 3 : DEFAULT_LIMITS.maxTotalModelTurns)),
+    maxDurationMsPerTurn,
+    maxTotalDurationMs: Number(value.maxTotalDurationMs ?? Math.max(maxDurationMsPerTurn, Number.isFinite(legacyDuration) ? legacyDuration * 3 : DEFAULT_LIMITS.maxTotalDurationMs)),
+    maxSubagents: Number(value.maxSubagents ?? DEFAULT_LIMITS.maxSubagents),
+    maxParallelReadTools: Number(value.maxParallelReadTools ?? DEFAULT_LIMITS.maxParallelReadTools),
+  }
+}
 
 export const DEFAULT_SETTINGS: AppSettings = {
   locale: 'zh-CN',
@@ -126,7 +149,7 @@ function currentProgress(row: any): any | undefined {
 
 export function presentRun(row: any, fallbackModel: ModelProfile): Run {
   const snapshot = row.modelSnapshot && Object.keys(row.modelSnapshot).length ? row.modelSnapshot : modelSnapshot(fallbackModel)
-  const limits = { ...DEFAULT_LIMITS, ...(row.limits ?? {}) }
+  const limits = normalizeRunLimits(row.limits)
   const status = row.status === 'waiting_user' ? 'waiting_user' : row.status
   const verification = status === 'completed' ? currentVerification(row) : undefined
   return {

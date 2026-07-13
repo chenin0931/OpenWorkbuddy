@@ -149,10 +149,12 @@ describe('AppDatabase persistence boundary', () => {
     expect(database.incrementRunModelTurns(run.id)).toBe(1)
     expect(database.incrementRunModelTurns(run.id)).toBe(2)
     expect(database.stopRunExecution(run.id, new Date(startedAt.getTime() + 2_500))).toEqual({ modelTurns: 2, activeDurationMs: 2_500, active: false })
+    expect(database.getRunTurnBudgetUsage(run.id, new Date(startedAt.getTime() + 2_500))).toMatchObject({ modelTurns: 2, activeDurationMs: 2_500, active: false })
     database.close()
 
     const reopened = new AppDatabase(path)
     expect(reopened.getRunBudgetUsage(run.id, new Date(startedAt.getTime() + 60_000))).toEqual({ modelTurns: 2, activeDurationMs: 2_500, active: false })
+    expect(reopened.getRunTurnBudgetUsage(run.id, new Date(startedAt.getTime() + 60_000))).toMatchObject({ modelTurns: 2, activeDurationMs: 2_500, active: false })
     reopened.beginRunExecution(run.id, new Date(startedAt.getTime() + 60_000))
     expect(reopened.stopRunExecution(run.id, new Date(startedAt.getTime() + 61_000))).toEqual({ modelTurns: 2, activeDurationMs: 3_500, active: false })
     reopened.close()

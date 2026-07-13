@@ -35,7 +35,7 @@ async function installMockBridge(page: Page, onboarding: boolean, failModelSecre
       id: 'run-1', workspaceId: workspace.id, title: statusUxMode ? '状态展示回归工作' : presentationMode ? '搜索今日新闻' : timelineRegressionMode ? '检查消息时间线' : turnGroupingRegressionMode ? '联网搜索今天新闻' : '完成桌面应用的安全验收', objective: statusUxMode ? '验证工作状态只在有操作价值或验证证据时显示' : presentationMode ? '搜索今日新闻' : timelineRegressionMode ? '检查消息时间线' : turnGroupingRegressionMode ? '联网搜索今天新闻' : '检查实现并生成可验证发行物', status: state.runStatus, accessMode: state.accessMode,
       ...(presentationMode || statusUxScenarioMode === 'current-partial' ? { outcome: 'partial', summary: '两条来源已读取，仍有一项待交叉核验。' } : statusUxScenarioMode === 'ordinary-completed' || statusUxScenarioMode === 'current-verified' ? { outcome: 'verified', summary: '工作内容已回复。' } : {}),
       model: { profileId: model.id, provider: model.provider, modelId: model.modelId, capabilities: {} },
-      limits: { maxModelTurns: 60, maxDurationMs: 7_200_000, maxSubagents: 3, maxParallelReadTools: 4 }, modelTurns: 18,
+      limits: { maxModelTurnsPerTurn: 60, maxTotalModelTurns: 180, maxDurationMsPerTurn: 7_200_000, maxTotalDurationMs: 21_600_000, maxSubagents: 3, maxParallelReadTools: 4 }, modelTurns: 18,
       createdAt: now, updatedAt: now,
     })
     const bootstrap = () => ({

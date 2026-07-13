@@ -177,8 +177,10 @@ export function SettingsPage({ snapshot, selectedWorkspaceId, perform, onWorkspa
 
       <SettingsSection icon="settings" title="高级运行限制" description="限制只影响新工作，正在进行的工作继续使用创建时的设置。">
         <div className="limit-grid">
-          <LimitInput label="模型循环" value={Number(defaultLimits.maxModelTurns ?? settings.maxIterations ?? 60)} onSave={(value) => void perform(() => bridge.updateSettings({ defaultRunLimits: { ...defaultLimits, maxModelTurns: value } }), '限制已保存')} />
-          <LimitInput label="最长分钟" value={Math.round(Number(defaultLimits.maxDurationMs ?? 7_200_000) / 60_000)} onSave={(value) => void perform(() => bridge.updateSettings({ defaultRunLimits: { ...defaultLimits, maxDurationMs: value * 60_000 } }), '限制已保存')} />
+          <LimitInput label="每轮模型回合" value={Number(defaultLimits.maxModelTurnsPerTurn ?? 60)} onSave={(value) => void perform(() => bridge.updateSettings({ defaultRunLimits: { ...defaultLimits, maxModelTurnsPerTurn: value } }), '限制已保存')} />
+          <LimitInput label="任务总模型回合" value={Number(defaultLimits.maxTotalModelTurns ?? 180)} onSave={(value) => void perform(() => bridge.updateSettings({ defaultRunLimits: { ...defaultLimits, maxTotalModelTurns: value } }), '限制已保存')} />
+          <LimitInput label="每轮最长分钟" value={Math.round(Number(defaultLimits.maxDurationMsPerTurn ?? 7_200_000) / 60_000)} onSave={(value) => void perform(() => bridge.updateSettings({ defaultRunLimits: { ...defaultLimits, maxDurationMsPerTurn: value * 60_000 } }), '限制已保存')} />
+          <LimitInput label="任务总时长分钟" value={Math.round(Number(defaultLimits.maxTotalDurationMs ?? 21_600_000) / 60_000)} onSave={(value) => void perform(() => bridge.updateSettings({ defaultRunLimits: { ...defaultLimits, maxTotalDurationMs: value * 60_000 } }), '限制已保存')} />
           <LimitInput label="并行助手" value={Number(defaultLimits.maxSubagents ?? settings.maxSubagents ?? 3)} onSave={(value) => void perform(() => bridge.updateSettings({ defaultRunLimits: { ...defaultLimits, maxSubagents: value } }), '限制已保存')} />
           <LimitInput label="并行只读工具" value={Number(defaultLimits.maxParallelReadTools ?? settings.maxReadTools ?? 4)} onSave={(value) => void perform(() => bridge.updateSettings({ defaultRunLimits: { ...defaultLimits, maxParallelReadTools: value } }), '限制已保存')} />
         </div>
