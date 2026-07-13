@@ -1,14 +1,14 @@
 import { useEffect, useState } from 'react'
 import { bridge, errorMessage } from '../../bridge'
 import { BrandMark, Icon } from '../../icons'
-import type { ModelProfileItem, WorkspaceItem } from '../../types'
+import type { ModelProfileItem, RunAccessMode, WorkspaceItem } from '../../types'
 import { SubmitForm } from '../../ui'
 
 export interface WelcomeComposerProps {
   workspace: WorkspaceItem | undefined
   models: ModelProfileItem[]
   defaultMode: 'plan' | 'execute'
-  onSubmit: (prompt: string, mode: 'plan' | 'execute', modelId?: string, attachmentIds?: string[]) => void
+  onSubmit: (prompt: string, mode: 'plan' | 'execute', accessMode: RunAccessMode, modelId?: string, attachmentIds?: string[]) => void
   onOpenSettings: () => void
 }
 
@@ -27,6 +27,7 @@ export function WelcomeComposer({
 }: WelcomeComposerProps) {
   const [prompt, setPrompt] = useState('')
   const [mode, setMode] = useState<'plan' | 'execute'>(defaultMode)
+  const [accessMode, setAccessMode] = useState<RunAccessMode>('approval')
   const [modelId, setModelId] = useState(models.find((model) => model.isDefault)?.id ?? models[0]?.id ?? '')
   const [attachments, setAttachments] = useState<Array<{ id: string; name: string }>>([])
   const [attachmentError, setAttachmentError] = useState<string>()
@@ -52,13 +53,23 @@ export function WelcomeComposer({
         <div className="inline-notice warning"><Icon name="key" /><span>还没有可用的模型配置。</span><button type="button" onClick={onOpenSettings}>添加模型</button></div>
       )}
       <SubmitForm className="hero-composer" onSubmit={() => {
-        if (prompt.trim()) onSubmit(prompt.trim(), mode, modelId || undefined, attachments.map((attachment) => attachment.id))
+        if (prompt.trim()) onSubmit(prompt.trim(), mode, accessMode, modelId || undefined, attachments.map((attachment) => attachment.id))
       }}>
         <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="描述你想完成的工作…" rows={4} />
         {attachments.length > 0 && <div className="composer-attachments">{attachments.map((attachment) => <span key={attachment.id}><Icon name="file" size={13} />{attachment.name}<button type="button" aria-label={`移除 ${attachment.name}`} onClick={() => setAttachments((items) => items.filter((item) => item.id !== attachment.id))}>×</button></span>)}</div>}
         {attachmentError && <small className="composer-error">{attachmentError}</small>}
         <div className="composer-toolbar">
           <div className="composer-options">
+            <select
+              className="access-mode-select"
+              value={accessMode}
+              onChange={(event) => setAccessMode(event.target.value as RunAccessMode)}
+              aria-label="文件访问权限"
+              title="完全访问允许读取和修改整个磁盘；删除、发送等高风险操作仍需确认"
+            >
+              <option value="approval">请求批准</option>
+              <option value="full_disk">完全访问</option>
+            </select>
             <button type="button" className="attachment-button" onClick={async () => {
               try {
                 setAttachmentError(undefined)

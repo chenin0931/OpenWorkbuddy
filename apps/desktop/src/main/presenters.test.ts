@@ -29,6 +29,7 @@ describe('run detail public projection', () => {
     const detail = presentRunDetail({
       id: 'run-1',
       workspaceId: 'workspace-1',
+      accessMode: 'full_disk',
       title: 'Research',
       prompt: 'Find current news',
       goal: 'Find current news',
@@ -87,6 +88,7 @@ describe('run detail public projection', () => {
     }, model)
 
     expect(detail.messages.map((message) => message.id)).toEqual(['message-user', 'message-answer'])
+    expect(detail.run.accessMode).toBe('full_disk')
     expect(detail.run.completionStatus).toBeUndefined()
     expect(detail.verification).toBeUndefined()
     expect(detail.toolCalls).toHaveLength(3)

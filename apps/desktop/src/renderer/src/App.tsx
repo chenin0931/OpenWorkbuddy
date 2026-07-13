@@ -15,7 +15,7 @@ import type {
   ApprovalItem,
   JsonRecord,
   ModelProvider,
-  PermissionMode,
+  RunAccessMode,
   RunDetailView,
   ViewKey,
   WorkbenchSnapshot,
@@ -25,7 +25,6 @@ import {
   ConfirmDialog,
   Field,
   IconButton,
-  PermissionModePicker,
   Spinner,
   StatusBadge,
   SubmitForm,
@@ -106,20 +105,41 @@ function RunHeader({ detail, onPause, onResume, onCancel, onToggleInspector, ins
   )
 }
 
-function RunComposer({ disabled, onSend }: { disabled: boolean; onSend: (message: string, attachmentIds?: string[]) => void }) {
+function RunComposer({ runId, accessMode, disabled, onSend }: {
+  runId: string
+  accessMode: RunAccessMode
+  disabled: boolean
+  onSend: (message: string, accessMode: RunAccessMode, attachmentIds?: string[]) => void
+}) {
   const [message, setMessage] = useState('')
+  const [draftAccessMode, setDraftAccessMode] = useState<RunAccessMode>(accessMode)
   const [attachments, setAttachments] = useState<Array<{ id: string; name: string }>>([])
+  useEffect(() => { setDraftAccessMode(accessMode) }, [runId, accessMode])
   return (
     <SubmitForm className="run-composer" onSubmit={() => {
       if (!message.trim() || disabled) return
-      onSend(message.trim(), attachments.map((attachment) => attachment.id))
+      onSend(message.trim(), draftAccessMode, attachments.map((attachment) => attachment.id))
       setMessage('')
       setAttachments([])
     }}>
       <textarea value={message} onChange={(event) => setMessage(event.target.value)} rows={1} placeholder={disabled ? '这项工作已停止' : '继续补充、调整方向或交代下一步…'} disabled={disabled} />
       {attachments.length > 0 && <div className="composer-attachments compact">{attachments.map((attachment) => <span key={attachment.id}><Icon name="file" size={12} />{attachment.name}<button type="button" aria-label={`移除 ${attachment.name}`} onClick={() => setAttachments((items) => items.filter((item) => item.id !== attachment.id))}>×</button></span>)}</div>}
       <div className="run-composer-bottom">
-        <span><button type="button" className="attachment-button compact" disabled={disabled} onClick={async () => { const imported = await bridge.importAttachments(); setAttachments((items) => [...items, ...imported.filter((next) => !items.some((item) => item.id === next.id)).map((item) => ({ id: item.id, name: item.name }))]) }}><Icon name="plus" size={13} />添加文件</button><span className="composer-context"><Icon name="lock" size={13} />本机处理</span></span>
+        <span>
+          <select
+            className="access-mode-select compact"
+            value={draftAccessMode}
+            onChange={(event) => setDraftAccessMode(event.target.value as RunAccessMode)}
+            aria-label="文件访问权限"
+            title="完全访问允许读取和修改整个磁盘；删除、发送等高风险操作仍需确认"
+            disabled={disabled}
+          >
+            <option value="approval">请求批准</option>
+            <option value="full_disk">完全访问</option>
+          </select>
+          <button type="button" className="attachment-button compact" disabled={disabled} onClick={async () => { const imported = await bridge.importAttachments(); setAttachments((items) => [...items, ...imported.filter((next) => !items.some((item) => item.id === next.id)).map((item) => ({ id: item.id, name: item.name }))]) }}><Icon name="plus" size={13} />添加文件</button>
+          <span className="composer-context"><Icon name="lock" size={13} />{draftAccessMode === 'full_disk' ? '本机全盘' : '本机处理'}</span>
+        </span>
         <button type="submit" className="send-button" aria-label="发送" disabled={disabled || !message.trim()}><Icon name="send" size={16} /></button>
       </div>
     </SubmitForm>
@@ -150,9 +170,9 @@ function TasksView({
   selectedWorkspace: WorkspaceItem | undefined
   inspectorOpen: boolean
   onInspector: () => void
-  onCreate: (prompt: string, mode: 'plan' | 'execute', modelId?: string, attachmentIds?: string[]) => void
+  onCreate: (prompt: string, mode: 'plan' | 'execute', accessMode: RunAccessMode, modelId?: string, attachmentIds?: string[]) => void
   onSettings: () => void
-  onSend: (message: string, attachmentIds?: string[]) => void
+  onSend: (message: string, accessMode: RunAccessMode, attachmentIds?: string[]) => void
   onPause: () => void
   onResume: () => void
   onCancel: () => void
@@ -179,7 +199,7 @@ function TasksView({
             onOpenChanges={() => openInspector('changes')}
           />
         </div>
-        <RunComposer disabled={inputDisabled} onSend={onSend} />
+        <RunComposer runId={detail.id} accessMode={detail.accessMode ?? 'approval'} disabled={inputDisabled} onSend={onSend} />
       </main>
       {inspectorOpen && <WorkInspector detail={detail} snapshot={snapshot} requestedTab={inspectorTab} onBindChrome={onBindChrome} onOpenSettings={onSettings} onRevealArtifact={onRevealArtifact} onUndoChange={onUndoChange} />}
     </div>
@@ -206,7 +226,6 @@ function Onboarding({
   const [saving, setSaving] = useState(false)
   const [memoryEnabled, setMemoryEnabled] = useState(snapshot.settings.memoryEnabled !== false)
   const [defaultExecutionMode, setDefaultExecutionMode] = useState<'plan' | 'execute'>(snapshot.settings.defaultExecutionMode === 'plan' ? 'plan' : 'execute')
-  const [permissionMode, setPermissionMode] = useState<PermissionMode>(snapshot.settings.permissionMode ?? 'balanced')
   useEffect(() => {
     const hasConnectedModel = snapshot.models.some((model) => model.hasSecret)
     if (open && step !== 0 && step < 3) setStep(hasConnectedModel ? snapshot.workspaces.length ? 3 : 2 : 1)
@@ -243,7 +262,7 @@ function Onboarding({
   }
   const finish = async () => {
     setKey('')
-    await perform(() => bridge.updateSettings({ memoryEnabled, defaultExecutionMode, permissionMode }), '设置已完成')
+    await perform(() => bridge.updateSettings({ memoryEnabled, defaultExecutionMode }), '设置已完成')
     onDone()
   }
   return (
@@ -264,7 +283,7 @@ function Onboarding({
           {step === 1 && <div className="setup-panel"><span className="eyebrow">第 1 步，共 4 步</span><h1>连接一个模型</h1><p>直接使用你的官方 API Key。密钥保存后不可从界面读取。</p><div className="provider-choice"><button type="button" className={provider === 'openai' ? 'is-active' : ''} onClick={() => selectProvider('openai')}><span>O</span><div><strong>OpenAI</strong><small>GPT 系列</small></div><i /></button><button type="button" className={provider === 'anthropic' ? 'is-active' : ''} onClick={() => selectProvider('anthropic')}><span>A</span><div><strong>Anthropic</strong><small>Claude 系列</small></div><i /></button><button type="button" className={provider === 'moonshotai-cn' ? 'is-active' : ''} onClick={() => selectProvider('moonshotai-cn')}><span className="kimi-provider-mark">K</span><div><strong>Kimi / Moonshot</strong><small>256K · 仅思考</small></div><i /></button></div><Field label="模型 ID"><input value={modelId} onChange={(event) => setModelId(event.target.value)} /></Field><Field label="API Key"><input type="password" value={key} onChange={(event) => setKey(event.target.value)} placeholder={MODEL_PROVIDER_META[provider].keyPlaceholder} /></Field>{provider === 'moonshotai-cn' && <div className="inline-notice kimi-model-notice"><Icon name="info" /><span>默认使用 Kimi K2.7 Code：256K 上下文，仅思考模式。</span></div>}<div className="secret-note"><Icon name="lock" />使用 macOS 系统加密存储；不会进入工具、日志或上下文。</div><button type="button" className="button primary setup-next" disabled={!modelId.trim() || !key.trim() || saving} onClick={() => void saveModel()}>{saving && <Spinner size={14} />}安全保存并继续<Icon name="arrowRight" /></button></div>}
           {step === 2 && <div className="setup-panel"><span className="eyebrow">第 2 步，共 4 步</span><h1>授权一个工作区</h1><p>WorkBuddy 只能通过文件工具访问你明确选择的根目录，并会阻止路径穿越和符号链接逃逸。</p><div className="workspace-picker-illustration"><span><Icon name="folder" size={30} /></span><div><strong>选择项目或资料文件夹</strong><small>你可以稍后添加多个工作区</small></div></div><ul className="safety-list"><li><Icon name="check" />修改前确认文件没有被其他程序更新</li><li><Icon name="check" />写入前保存快照，完成后展示变更</li><li><Icon name="check" />未知命令会在执行前请你确认</li></ul><button type="button" className="button primary setup-next" onClick={() => void chooseWorkspace()}>选择文件夹<Icon name="arrowRight" /></button></div>}
           {step === 3 && <div className="setup-panel"><span className="eyebrow">第 3 步，共 4 步</span><h1>连接 Chrome</h1><p>使用现有登录状态时，需要你手动加载扩展并绑定标签页；应用不会读取未授权页面。</p><div className="chrome-settings"><div className="chrome-illustration"><Icon name="globe" size={24} /></div><div><strong>{snapshot.chrome.connected ? 'Chrome 已连接' : snapshot.chrome.extensionInstalled ? '扩展已安装，当前离线' : '尚未检测到浏览器连接'}</strong><span>本地桥接：{snapshot.chrome.nativeHostInstalled ? '已安装' : '待安装'} · 可以稍后继续配置</span></div><span className={snapshot.chrome.connected ? 'health-pill healthy' : 'health-pill'}><i />{snapshot.chrome.connected ? '在线' : '可跳过'}</span></div><ul className="safety-list"><li><Icon name="check" />只访问你主动绑定给当前工作的标签页</li><li><Icon name="check" />不会导出 Cookie，也不会读取其他既有标签</li><li><Icon name="check" />提交、购买、发送、上传和删除仍需确认</li></ul><button type="button" className="button primary setup-next" onClick={() => setStep(4)}>{snapshot.chrome.connected ? '继续' : '稍后配置并继续'}<Icon name="arrowRight" /></button></div>}
-          {step === 4 && <div className="setup-panel"><span className="eyebrow">第 4 步，共 4 步</span><h1>选择权限级别</h1><p>决定低风险本机操作是否自动完成。发送、发布、支付、删除和外部副作用始终由你确认。</p><PermissionModePicker value={permissionMode} onChange={setPermissionMode} /><div className="secret-note"><Icon name="shield" />权限级别不会绕过工作区边界、写入快照、过期文件检查和本地活动记录。</div><SettingRow title="新工作默认方式" detail="先整理计划时只使用只读能力。"><select value={defaultExecutionMode} onChange={(event) => setDefaultExecutionMode(event.target.value as 'plan' | 'execute')}><option value="execute">直接处理</option><option value="plan">先整理计划（只读）</option></select></SettingRow><SettingRow title="允许提出记忆候选" detail="所有候选仍需你确认后才生效。"><Toggle checked={memoryEnabled} onChange={setMemoryEnabled} label="记忆建议" /></SettingRow><button type="button" className="button primary setup-next" onClick={() => void finish()}>进入工作台<Icon name="arrowRight" /></button></div>}
+          {step === 4 && <div className="setup-panel"><span className="eyebrow">第 4 步，共 4 步</span><h1>确认工作方式</h1><p>每项工作开始前，你都可以单独决定文件访问范围，不需要设置一个覆盖所有工作的全局权限。</p><div className="secret-note"><Icon name="shield" />在输入框“添加文件”左侧选择“请求批准”或“完全访问”。选择只对当前工作生效，并会随工作保存。</div><SettingRow title="新工作默认方式" detail="先整理计划时只使用只读能力。"><select value={defaultExecutionMode} onChange={(event) => setDefaultExecutionMode(event.target.value as 'plan' | 'execute')}><option value="execute">直接处理</option><option value="plan">先整理计划（只读）</option></select></SettingRow><SettingRow title="允许提出记忆候选" detail="所有候选仍需你确认后才生效。"><Toggle checked={memoryEnabled} onChange={setMemoryEnabled} label="记忆建议" /></SettingRow><button type="button" className="button primary setup-next" onClick={() => void finish()}>进入工作台<Icon name="arrowRight" /></button></div>}
         </div>
       </section>
     </div>
@@ -328,7 +347,7 @@ export default function App() {
     await perform(() => bridge.selectWorkspace(id), undefined)
   }
 
-  const createRun = async (prompt: string, mode: 'plan' | 'execute', modelProfileId?: string, attachmentIds: string[] = []) => {
+  const createRun = async (prompt: string, mode: 'plan' | 'execute', accessMode: RunAccessMode, modelProfileId?: string, attachmentIds: string[] = []) => {
     if (!selectedWorkspaceId) { notify('info', '请先添加工作区'); setView('settings'); return }
     if (!modelProfileId) { notify('info', '请先配置模型'); setView('settings'); return }
     const objective = mode === 'plan' ? `仅制定可执行计划，不执行任何修改：\n\n${prompt}` : prompt
@@ -336,6 +355,7 @@ export default function App() {
       workspaceId: selectedWorkspaceId,
       objective,
       mode,
+      accessMode,
       title: prompt.length > 48 ? `${prompt.slice(0, 48)}…` : prompt,
       modelProfileId,
       ...(attachmentIds.length ? { attachmentIds } : {}),
@@ -347,11 +367,11 @@ export default function App() {
     }
   }
 
-  const sendMessage = async (content: string, attachmentIds: string[] = []) => {
+  const sendMessage = async (content: string, accessMode: RunAccessMode, attachmentIds: string[] = []) => {
     if (!selectedRunId) return
     const runId = selectedRunId
     const optimisticEventId = workbench.appendOptimisticUserMessage(runId, content, attachmentIds)
-    await perform(() => bridge.sendMessage(runId, content, attachmentIds))
+    await perform(() => bridge.sendMessage(runId, content, accessMode, attachmentIds))
     await workbench.reloadRun(runId, true)
     workbench.removeOptimisticUserMessage(runId, optimisticEventId)
   }
@@ -402,9 +422,9 @@ export default function App() {
           selectedWorkspace={selectedWorkspace}
           inspectorOpen={inspectorOpen}
           onInspector={() => setInspectorOpen((value) => !value)}
-          onCreate={(prompt, mode, modelId, attachmentIds) => void createRun(prompt, mode, modelId, attachmentIds)}
+          onCreate={(prompt, mode, accessMode, modelId, attachmentIds) => void createRun(prompt, mode, accessMode, modelId, attachmentIds)}
           onSettings={() => setView('settings')}
-          onSend={(message, attachmentIds) => void sendMessage(message, attachmentIds)}
+          onSend={(message, accessMode, attachmentIds) => void sendMessage(message, accessMode, attachmentIds)}
           onPause={() => selectedRunId && void perform(() => bridge.pauseRun(selectedRunId), '工作已暂停', { refreshRun: true })}
           onResume={() => selectedRunId && void perform(() => bridge.resumeRun(selectedRunId), '继续处理', { refreshRun: true })}
           onCancel={() => setCancelOpen(true)}

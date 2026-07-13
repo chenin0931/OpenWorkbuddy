@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { basename, isAbsolute, join, relative, sep } from 'node:path'
 import { lstat, readFile, realpath } from 'node:fs/promises'
-import type { ModelProfile, RunDetail, RunEvent } from '@onmyworkbuddy/contracts'
+import type { ModelProfile, RunAccessMode, RunDetail, RunEvent } from '@onmyworkbuddy/contracts'
 import { compileContext, compressContext, renderContextItem } from '@onmyworkbuddy/core'
 import type { AppDatabase } from './database'
 import type { ArtifactStore } from './artifact-store'
@@ -80,7 +80,7 @@ export class RunCoordinator {
     await this.handleAgentEvent(message.runId, message.event)
   }
 
-  async create(input: { workspaceId: string; objective: string; mode?: 'plan' | 'execute'; title?: string; modelProfileId?: string; limits?: any; parentRunId?: string; readOnly?: boolean; fixedModelSnapshot?: any; attachmentIds?: string[] }): Promise<RunDetail> {
+  async create(input: { workspaceId: string; objective: string; accessMode?: RunAccessMode; mode?: 'plan' | 'execute'; title?: string; modelProfileId?: string; limits?: any; parentRunId?: string; readOnly?: boolean; fixedModelSnapshot?: any; attachmentIds?: string[] }): Promise<RunDetail> {
     const profile = this.selectProfile(input.modelProfileId)
     const settings = this.database.getSetting<any>('appSettings', {})
     const limits = { ...DEFAULT_LIMITS, ...(settings.defaultRunLimits ?? {}), ...(input.limits ?? {}) }
@@ -92,6 +92,7 @@ export class RunCoordinator {
       modelSnapshot: input.fixedModelSnapshot ?? modelSnapshot(profile),
       limits,
       mode: input.mode === 'plan' ? 'plan' : 'act',
+      accessMode: input.accessMode ?? 'approval',
       parentRunId: input.parentRunId,
       readOnly: input.readOnly ?? (input.mode === 'plan'),
     })
@@ -193,9 +194,40 @@ export class RunCoordinator {
     }
   }
 
-  async sendMessage(runId: string, content: string, attachmentIds: string[] = []): Promise<void> {
-    const raw = this.database.getRun(runId)
+  async sendMessage(runId: string, content: string, accessMode?: RunAccessMode, attachmentIds: string[] = []): Promise<void> {
+    let raw = this.database.getRun(runId)
     if (!raw) throw new Error('任务不存在')
+    let accessModeChanged = false
+    if (accessMode && raw.accessMode !== accessMode) {
+      if (accessMode === 'full_disk' && raw.parentRunId) {
+        const parent = this.database.getRun(raw.parentRunId)
+        if (!parent || parent.accessMode !== 'full_disk') {
+          throw Object.assign(new Error('子 Agent 不能获得高于父任务的文件访问权限。请先在父任务中切换为“完全访问”。'), { code: 'PARENT_ACCESS_MODE_REQUIRED' })
+        }
+      }
+      accessModeChanged = true
+      const previousAccessMode = raw.accessMode ?? 'approval'
+      this.database.updateRun(runId, { accessMode })
+      const descendantDowngrade = previousAccessMode === 'full_disk' && accessMode === 'approval'
+        ? this.database.downgradeDescendantAccess(runId)
+        : { runIds: [], activeRunIds: [] }
+      for (const childRunId of descendantDowngrade.activeRunIds) {
+        this.runner.cancelRun(childRunId)
+        this.host.steer(childRunId, '<runtime-authority source="OpenWorkbuddy" trusted="true">父任务已收回完全访问权限。本子任务后续只能访问当前工作区，并按请求批准策略执行。</runtime-authority>', [])
+      }
+      for (const childRunId of descendantDowngrade.runIds) {
+        this.database.appendRunEvent(childRunId, 'run.access_mode_changed', '父任务已将文件访问收紧为请求批准', {
+          accessMode: 'approval', parentRunId: runId,
+        })
+        this.emitRun(childRunId)
+      }
+      this.database.audit('security', 'run_access_mode_changed', accessMode === 'full_disk' ? '任务已切换为完全访问' : '任务已切换为请求批准', {
+        actor: 'user', outcome: 'succeeded', previousAccessMode, accessMode,
+        downgradedDescendantRunIds: descendantDowngrade.runIds,
+      }, runId)
+      raw = this.database.getRun(runId)
+      if (!raw) throw new Error('任务不存在')
+    }
     if (attachmentIds.length) this.database.attachArtifactsToRun(runId, attachmentIds)
     this.database.addMessage(runId, 'user', content, attachmentIds.length ? { artifactIds: attachmentIds } : {})
     const images = await this.loadArtifactsAsImages(attachmentIds)
@@ -205,7 +237,10 @@ export class RunCoordinator {
         this.database.markRunTurnStarted(runId, 'follow_up')
         this.emitRun(runId)
       }
-      this.host.steer(runId, content, images)
+      const runtimeAuthority = accessModeChanged
+        ? `<runtime-authority source="OpenWorkbuddy" trusted="true">文件访问已切换为 ${raw.accessMode === 'full_disk' ? '完全访问；授权根为 /，相对路径仍以当前工作区为基准' : '请求批准；授权根恢复为当前工作区'}。删除、发送、发布等高风险动作仍须宿主确认。</runtime-authority>\n\n`
+        : ''
+      this.host.steer(runId, `${runtimeAuthority}${content}`, images)
     }
     else await this.start(runId, content)
   }
@@ -277,6 +312,7 @@ export class RunCoordinator {
       // snapshot. A configured child default gets its own snapshot at creation.
       fixedModelSnapshot: configuredChildProfile ? undefined : parent.modelSnapshot,
       parentRunId: input.parentRunId,
+      accessMode: parent.accessMode ?? 'approval',
       // A child can narrow authority, never widen it by selecting another role.
       readOnly: parent.readOnly || input.role !== 'general',
     })
@@ -549,7 +585,16 @@ export class RunCoordinator {
       workspaceRules,
       skills,
       task: { objective: run.goal ?? run.prompt, ...(progress ? { progress } : {}) },
-      environment: { os: process.platform, arch: process.arch, shell: process.env.SHELL ?? '/bin/zsh', time: new Date().toISOString(), timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, workspace: workspace.root_path },
+      environment: {
+        os: process.platform,
+        arch: process.arch,
+        shell: process.env.SHELL ?? '/bin/zsh',
+        time: new Date().toISOString(),
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        workspace: workspace.root_path,
+        accessMode: run.accessMode ?? 'approval',
+        authorizedRoot: run.accessMode === 'full_disk' ? '/' : workspace.root_path,
+      },
       memories,
       ...(previousCheckpoint ? { previousCheckpoint } : {}),
       untrustedContent: await this.attachmentContextItems(run.id),

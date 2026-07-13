@@ -1,7 +1,6 @@
 import { createHash } from 'node:crypto'
 import { spawn, type ChildProcess } from 'node:child_process'
-import { lstat, mkdir, readFile, readdir, rename, stat } from 'node:fs/promises'
-import { basename, join } from 'node:path'
+import { readFile, readdir, stat } from 'node:fs/promises'
 import process from 'node:process'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
@@ -16,6 +15,7 @@ import {
   restoreFileSafely,
   safeFetch,
   safeWebSearch,
+  trashFileSafely,
   writeFileSafely,
 } from './runner-security'
 
@@ -24,27 +24,98 @@ type Command = ToolRunnerCommand
 type ResultMessage = { type: 'result'; requestId: string; ok: true; result: any } | { type: 'result'; requestId: string; ok: false; error: string; code?: string }
 
 const parent = process.parentPort
-if (!parent) throw new Error('Tool Runner 必须由 Electron utilityProcess 启动')
+if (!parent && process.env.NODE_ENV !== 'test') throw new Error('Tool Runner 必须由 Electron utilityProcess 启动')
 
 const processes = new Map<string, ChildProcess>()
 type McpClientEntry = { client: Client; transport: StdioClientTransport | StreamableHTTPClientTransport; fingerprint: string }
 type CachedMcpConnection = McpClientEntry & { close(): Promise<void> }
 const mcpConnections = new FingerprintedConnectionCache<CachedMcpConnection>()
 const MAX_TEXT = 2 * 1024 * 1024
+const MAX_PROCESS_OUTPUT_BYTES = 128 * 1024
 
-const send = (message: Record<string, unknown>): void => parent.postMessage({ protocolVersion: WORKER_PROTOCOL_VERSION, ...message })
+const send = (message: Record<string, unknown>): void => {
+  if (!parent) throw new Error('Tool Runner IPC 不可用')
+  parent.postMessage({ protocolVersion: WORKER_PROTOCOL_VERSION, ...message })
+}
 const hash = (content: Buffer | string): string => createHash('sha256').update(content).digest('hex')
 function sanitizeEnv(): Record<string, string> {
   const blocked = /(api[_-]?key|token|secret|password|credential|authorization|cookie)/i
   return Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined && !blocked.test(entry[0])))
 }
 
-function truncate(value: string, max = 128 * 1024): { text: string; truncated: boolean; total: number } {
-  const bytes = Buffer.byteLength(value)
-  if (bytes <= max) return { text: value, truncated: false, total: bytes }
-  const head = value.slice(0, Math.floor(max * 0.72))
-  const tail = value.slice(-Math.floor(max * 0.24))
-  return { text: `${head}\n\n…[已截断 ${bytes - max} bytes]…\n\n${tail}`, truncated: true, total: bytes }
+export interface BoundedTextSnapshot {
+  text: string
+  truncated: boolean
+  total: number
+  omittedBytes: number
+}
+
+/**
+ * Retains a fixed-size byte window while a process is running. The first
+ * portion is stable and the second portion rolls forward, so diagnostics keep
+ * both the command's opening context and its most recent output without ever
+ * accumulating the complete stream in memory.
+ */
+export class BoundedTextCapture {
+  private readonly headLimit: number
+  private readonly tailLimit: number
+  private head = Buffer.alloc(0)
+  private tail = Buffer.alloc(0)
+  private totalBytes = 0
+
+  constructor(private readonly maxBytes = MAX_PROCESS_OUTPUT_BYTES) {
+    if (!Number.isSafeInteger(maxBytes) || maxBytes < 2) throw new Error('maxBytes 必须是不小于 2 的整数')
+    this.headLimit = Math.max(1, Math.floor(maxBytes * 0.75))
+    this.tailLimit = maxBytes - this.headLimit
+  }
+
+  append(value: Buffer | string): void {
+    const input = Buffer.isBuffer(value) ? value : Buffer.from(value)
+    this.totalBytes += input.length
+
+    let offset = 0
+    if (this.head.length < this.headLimit) {
+      const length = Math.min(this.headLimit - this.head.length, input.length)
+      if (length > 0) {
+        this.head = Buffer.concat([this.head, Buffer.from(input.subarray(0, length))])
+        offset = length
+      }
+    }
+
+    const remainder = input.subarray(offset)
+    if (remainder.length === 0) return
+    if (remainder.length >= this.tailLimit) {
+      this.tail = Buffer.from(remainder.subarray(remainder.length - this.tailLimit))
+      return
+    }
+
+    const combined = Buffer.concat([this.tail, remainder])
+    this.tail = combined.length <= this.tailLimit
+      ? combined
+      : Buffer.from(combined.subarray(combined.length - this.tailLimit))
+  }
+
+  get retainedBytes(): number {
+    return this.head.length + this.tail.length
+  }
+
+  snapshot(): BoundedTextSnapshot {
+    const omittedBytes = Math.max(0, this.totalBytes - this.retainedBytes)
+    if (omittedBytes === 0) {
+      return {
+        text: Buffer.concat([this.head, this.tail]).toString('utf8'),
+        truncated: false,
+        total: this.totalBytes,
+        omittedBytes,
+      }
+    }
+    return {
+      text: `${this.head.toString('utf8')}\n\n…[已省略 ${omittedBytes} bytes]…\n\n${this.tail.toString('utf8')}`,
+      truncated: true,
+      total: this.totalBytes,
+      omittedBytes,
+    }
+  }
 }
 
 async function connectMcp(server: Record<string, any>): Promise<McpClientEntry> {
@@ -79,15 +150,16 @@ async function disconnectMcp(serverId: string): Promise<boolean> {
 }
 
 async function execute(command: Extract<Command, { type: 'execute' }>): Promise<any> {
-  const { toolId, args, workspacePath } = command
+  const { toolId, args, workspacePath, authorizedRoot } = command
+  const authorizationRoot = authorizedRoot ?? workspacePath
   switch (toolId) {
     case 'file.list': {
-      const { root, target } = await resolveAuthorizedPath(workspacePath, args.path ?? '.')
+      const { root, target } = await resolveAuthorizedPath(authorizationRoot, args.path ?? '.', false, workspacePath)
       const entries = await readdir(target, { withFileTypes: true })
       return { root, path: target, entries: entries.slice(0, args.limit ?? 500).map((entry) => ({ name: entry.name, type: entry.isDirectory() ? 'directory' : entry.isSymbolicLink() ? 'symlink' : 'file' })) }
     }
     case 'file.read': {
-      const { target } = await resolveAuthorizedPath(workspacePath, args.path)
+      const { target } = await resolveAuthorizedPath(authorizationRoot, args.path, false, workspacePath)
       const info = await stat(target)
       if (!info.isFile()) throw new Error('目标不是文件')
       if (info.size > MAX_TEXT) throw new Error('文件超过 2 MB；请使用 Shell 或专用工具分段读取')
@@ -95,33 +167,25 @@ async function execute(command: Extract<Command, { type: 'execute' }>): Promise<
       return { path: target, content, sha256: hash(content), mtimeMs: info.mtimeMs, size: info.size }
     }
     case 'file.search': {
-      const { target } = await resolveAuthorizedPath(workspacePath, args.path ?? '.')
+      const { target } = await resolveAuthorizedPath(authorizationRoot, args.path ?? '.', false, workspacePath)
       const rgArgs = ['--json', '--hidden', '--glob', '!.git/**', '--glob', '!node_modules/**', String(args.query), target]
       return runProcess(command.requestId, 'rg', rgArgs, target, 60_000)
     }
     case 'file.write': {
-      return writeFileSafely(workspacePath, String(args.path), String(args.content), args.expectedSha256)
+      return writeFileSafely(authorizationRoot, String(args.path), String(args.content), args.expectedSha256, workspacePath)
     }
     case 'file.replace': {
-      return replaceFileTextSafely(workspacePath, String(args.path), String(args.oldText), String(args.newText), Boolean(args.replaceAll), args.expectedSha256)
+      return replaceFileTextSafely(authorizationRoot, String(args.path), String(args.oldText), String(args.newText), Boolean(args.replaceAll), args.expectedSha256, workspacePath)
     }
     case 'file.restore': {
       if (typeof args.path !== 'string' || typeof args.content !== 'string' || typeof args.createdFile !== 'boolean') throw new Error('file.restore 参数无效')
-      return restoreFileSafely(workspacePath, args.path, args.content, args.expectedCurrentSha256, args.createdFile)
+      return restoreFileSafely(authorizationRoot, args.path, args.content, args.expectedCurrentSha256, args.createdFile, workspacePath, workspacePath)
     }
     case 'file.delete': {
-      const { target, root } = await resolveAuthorizedPath(workspacePath, args.path)
-      const info = await lstat(target)
-      if (!info.isFile()) throw new Error('仅支持删除文件')
-      const before = await readFile(target)
-      const trash = join(root, '.on-my-workbuddy-trash')
-      await mkdir(trash, { recursive: true })
-      const destination = join(trash, `${Date.now()}-${basename(target)}`)
-      await rename(target, destination)
-      return { path: target, trashedTo: destination, beforeSha256: hash(before), size: before.byteLength }
+      return trashFileSafely(authorizationRoot, args.path, workspacePath, workspacePath)
     }
     case 'shell.run': {
-      const cwd = (await resolveAuthorizedPath(workspacePath, args.cwd ?? '.')).target
+      const cwd = (await resolveAuthorizedPath(authorizationRoot, args.cwd ?? '.', false, workspacePath)).target
       return runProcess(command.requestId, '/bin/zsh', ['-lc', String(args.command)], cwd, Math.min(Number(args.timeoutMs ?? 120_000), 600_000))
     }
     case 'web.search': return safeWebSearch(String(args.query), Number(args.maxResults ?? 8))
@@ -148,16 +212,18 @@ function runProcess(requestId: string, executable: string, args: string[], cwd: 
   return new Promise((resolvePromise, reject) => {
     const child = spawn(executable, args, { cwd, env: sanitizeEnv(), detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
     processes.set(requestId, child)
-    let stdout = ''; let stderr = ''; let settled = false
+    const stdout = new BoundedTextCapture()
+    const stderr = new BoundedTextCapture()
+    let settled = false
     const timer = setTimeout(() => {
       try { process.kill(-child.pid!, 'SIGTERM') } catch { /* The process may have exited between timeout and signal delivery. */ }
       reject(new Error(`命令超时（${timeoutMs} ms）`))
     }, timeoutMs)
     const collect = (stream: NodeJS.ReadableStream | null, channel: 'stdout' | 'stderr'): void => {
       stream?.on('data', (chunk: Buffer) => {
-        const text = chunk.toString('utf8')
-        if (channel === 'stdout') stdout += text; else stderr += text
-        send({ type: 'progress', requestId, channel, text: text.slice(-16_384) })
+        if (channel === 'stdout') stdout.append(chunk); else stderr.append(chunk)
+        const progressChunk = chunk.subarray(Math.max(0, chunk.length - 16_384))
+        send({ type: 'progress', requestId, channel, text: progressChunk.toString('utf8') })
       })
     }
     collect(child.stdout, 'stdout'); collect(child.stderr, 'stderr')
@@ -165,14 +231,24 @@ function runProcess(requestId: string, executable: string, args: string[], cwd: 
     child.on('close', (code, signal) => {
       if (settled) return
       settled = true; clearTimeout(timer); processes.delete(requestId)
-      const out = truncate(stdout); const err = truncate(stderr)
+      const out = stdout.snapshot(); const err = stderr.snapshot()
       if (code !== 0) reject(Object.assign(new Error(`命令退出码 ${code}${signal ? ` (${signal})` : ''}\n${err.text || out.text}`), { code: 'COMMAND_FAILED', details: { code, signal, stdout: out, stderr: err } }))
-      else resolvePromise({ code: code ?? 0, signal, stdout: out.text, stderr: err.text, stdoutTruncated: out.truncated, stderrTruncated: err.truncated, totalBytes: out.total + err.total })
+      else resolvePromise({
+        code: code ?? 0,
+        signal,
+        stdout: out.text,
+        stderr: err.text,
+        stdoutTruncated: out.truncated,
+        stderrTruncated: err.truncated,
+        stdoutOmittedBytes: out.omittedBytes,
+        stderrOmittedBytes: err.omittedBytes,
+        totalBytes: out.total + err.total,
+      })
     })
   })
 }
 
-parent.on('message', async (event: { data: unknown }) => {
+parent?.on('message', async (event: { data: unknown }) => {
   let command: Command
   try { command = parseToolRunnerCommand(event.data) } catch (error) { console.error('Invalid Tool Runner IPC', error); return }
   if (command.type === 'cancel') {

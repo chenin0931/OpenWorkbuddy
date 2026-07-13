@@ -118,6 +118,7 @@
 .composer-toolbar { justify-content: space-between; padding-top: 10px; border-top: 1px solid var(--separator); }
 .composer-options { min-width: 0; }
 .composer-options select, .attachment-button { height: 30px; padding: 0 9px; color: var(--text-secondary); background: var(--surface-subtle); border: 1px solid var(--separator); border-radius: var(--radius-control); font-size: 12px; }
+.access-mode-select { height: 30px; max-width: 112px; padding: 0 25px 0 9px; color: var(--text-secondary); background-color: var(--surface-subtle); border: 1px solid var(--separator); border-radius: var(--radius-control); font-size: 12px; }
 .attachment-button { display: inline-flex; align-items: center; gap: 5px; }
 .attachment-button:hover { color: var(--text); background: var(--surface-hover); }
 .send-button { display: grid; place-items: center; width: 34px; height: 34px; padding: 0; color: #fff; background: var(--accent); border-radius: var(--radius-surface); }
@@ -146,4 +147,6 @@
   .app-shell { grid-template-columns: 220px minmax(0, 1fr); }
   .suggestion-grid { grid-template-columns: 1fr; }
   .welcome-view { width: calc(100% - 32px); }
+  .composer-options { flex-wrap: wrap; }
+  .composer-options select[aria-label="模型"] { max-width: 210px; }
 }

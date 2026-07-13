@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { chmod, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -13,9 +13,11 @@ import {
   pinnedHttpRequest,
   prepareMcpConnection,
   replaceFileTextSafely,
+  resolveAuthorizedPath,
   restoreFileSafely,
   safeFetch,
   safeWebSearch,
+  trashFileSafely,
   writeFileSafely,
 } from './runner-security'
 
@@ -203,6 +205,24 @@ describe('public web search boundary', () => {
 })
 
 describe('stale-safe atomic file mutation', () => {
+  it('separates the authorization root from the project-relative path base', async () => {
+    const authorizationRoot = await workspace()
+    const project = join(authorizationRoot, 'project')
+    const outsideProject = join(authorizationRoot, 'outside')
+    await mkdir(project)
+    await mkdir(outsideProject)
+    await writeFile(join(project, 'local.txt'), 'local')
+    await writeFile(join(outsideProject, 'global.txt'), 'global')
+
+    await expect(resolveAuthorizedPath(project, join(outsideProject, 'global.txt'))).rejects.toMatchObject({ code: 'PATH_OUTSIDE_WORKSPACE' })
+    await expect(resolveAuthorizedPath(authorizationRoot, 'local.txt', false, project)).resolves.toMatchObject({ target: await realpath(join(project, 'local.txt')) })
+    await expect(resolveAuthorizedPath(authorizationRoot, join(outsideProject, 'global.txt'), false, project)).resolves.toMatchObject({ target: await realpath(join(outsideProject, 'global.txt')) })
+
+    const trashed = await trashFileSafely(authorizationRoot, join(outsideProject, 'global.txt'), project, project)
+    expect(trashed.trashedTo).toContain(join(await realpath(project), '.on-my-workbuddy-trash'))
+    await expect(stat(join(outsideProject, 'global.txt'))).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
   it('requires a hash for existing files, writes atomically and preserves mode', async () => {
     const root = await workspace()
     const target = join(root, 'note.txt')

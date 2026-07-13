@@ -9,7 +9,7 @@ const now = '2026-07-11T00:00:00.000Z'
 
 class FakeDatabase {
   settings: Record<string, unknown> = { appSettings: { memoryEnabled: true, permissionMode: 'cautious' } }
-  run: any = { id: 'run-1', workspaceId: 'workspace-1', steps: [], status: 'running', readOnly: false }
+  run: any = { id: 'run-1', workspaceId: 'workspace-1', accessMode: 'approval', steps: [], status: 'running', readOnly: false }
   toolRows: any[] = []
   artifactRows: any[] = []
   savedMemory: any
@@ -164,7 +164,7 @@ describe('ToolBroker file leases and artifacts', () => {
     ])
     expect(maxActive).toBe(1)
     const diff = fixture.stored.find((artifact) => artifact.kind === 'diff')
-    expect(diff.metadata).toMatchObject({ path: '/workspace/new.txt', afterSha256: 'after-hash', createdFile: true })
+    expect(diff.metadata).toMatchObject({ path: '/workspace/new.txt', afterSha256: 'after-hash', createdFile: true, accessModeAtMutation: 'approval' })
     expect(diff.metadata.snapshotArtifactId).toMatch(/^artifact-/)
   })
 })
@@ -248,9 +248,9 @@ describe('ToolBroker capability enforcement', () => {
     expect(runnerCalls[0]).toMatchObject({ toolId: 'web.search', args: { query: 'OpenWorkbuddy', maxResults: 5 } })
   })
 
-  it('runs a public search without an approval in balanced mode', async () => {
+  it('keeps outbound search behind approval in full access mode', async () => {
     const database = new FakeDatabase()
-    database.settings.appSettings = { memoryEnabled: true, permissionMode: 'balanced' }
+    database.run.accessMode = 'full_disk'
     database.run.readOnly = true
     database.granted = false
     const runnerCalls: any[] = []
@@ -259,15 +259,88 @@ describe('ToolBroker capability enforcement', () => {
       return { engine: 'bing-html', query: input.args.query, resultCount: 0, results: [] }
     })
 
-    await expect(fixture.broker.handle({
+    const pending = fixture.broker.handle({
       runId: 'run-1',
       requestId: 'search-balanced',
       toolCallId: 'search-balanced',
       toolId: 'web_search',
       args: { query: 'OpenWorkbuddy' },
-    })).resolves.toMatchObject({ query: 'OpenWorkbuddy' })
-    expect(runnerCalls).toHaveLength(1)
+    })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(runnerCalls).toHaveLength(0)
+    expect(database.approvals).toHaveLength(1)
+    fixture.broker.rejectRunApprovals('run-1', 'test cleanup')
+    await expect(pending).rejects.toThrow('test cleanup')
+  })
+
+  it('treats request-approval as conservative even when the global convenience mode is balanced', async () => {
+    const database = new FakeDatabase()
+    database.settings.appSettings = { memoryEnabled: true, permissionMode: 'balanced' }
+    database.granted = false
+    const runnerCalls: any[] = []
+    const fixture = brokerFixture(database, async (input) => { runnerCalls.push(input); return {} })
+
+    const pending = fixture.broker.handle({
+      runId: 'run-1', requestId: 'write-approval-mode', toolCallId: 'write-approval-mode', toolId: 'file_write',
+      args: { path: 'inside.txt', content: 'created' },
+    })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(runnerCalls).toHaveLength(0)
+    expect(database.approvals).toHaveLength(1)
+    fixture.broker.rejectRunApprovals('run-1', 'test cleanup')
+    await expect(pending).rejects.toThrow('test cleanup')
+  })
+
+  it('uses the disk root only for full-access tool authorization while keeping the project cwd', async () => {
+    const database = new FakeDatabase()
+    database.run.accessMode = 'full_disk'
+    database.granted = false
+    const runnerCalls: any[] = []
+    const fixture = brokerFixture(database, async (input) => {
+      runnerCalls.push(input)
+      if (input.toolId === 'file.read') throw Object.assign(new Error('not found'), { code: 'ENOENT' })
+      return { path: '/tmp/outside.txt', before: null, after: 'created', beforeSha256: null, sha256: 'new', created: true }
+    })
+
+    await expect(fixture.broker.handle({
+      runId: 'run-1', requestId: 'write-full', toolCallId: 'write-full', toolId: 'file_write',
+      args: { path: '/tmp/outside.txt', content: 'created' },
+    })).resolves.toMatchObject({ path: '/tmp/outside.txt' })
+    expect(runnerCalls).toHaveLength(2)
+    expect(runnerCalls.every((call) => call.authorizedRoot === '/' && call.workspacePath === '/workspace')).toBe(true)
     expect(database.approvals).toHaveLength(0)
+
+    const deletion = fixture.broker.handle({
+      runId: 'run-1', requestId: 'delete-full', toolCallId: 'delete-full', toolId: 'file_delete',
+      args: { path: '/tmp/outside.txt' },
+    })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(database.approvals).toHaveLength(1)
+    fixture.broker.rejectRunApprovals('run-1', 'test cleanup')
+    await expect(deletion).rejects.toThrow('test cleanup')
+
+    const unknownShell = fixture.broker.handle({
+      runId: 'run-1', requestId: 'shell-full', toolCallId: 'shell-full', toolId: 'shell_run',
+      args: { command: "python3 -c 'print(1)'" },
+    })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(database.approvals).toHaveLength(2)
+    fixture.broker.rejectRunApprovals('run-1', 'test cleanup')
+    await expect(unknownShell).rejects.toThrow('test cleanup')
+  })
+
+  it('fails closed instead of using the disk root when the run workspace disappeared', async () => {
+    const database = new FakeDatabase()
+    database.run.accessMode = 'full_disk'
+    database.getWorkspace = (() => undefined) as any
+    const runnerCalls: any[] = []
+    const fixture = brokerFixture(database, async (input) => { runnerCalls.push(input); return {} })
+
+    await expect(fixture.broker.handle({
+      runId: 'run-1', requestId: 'missing-workspace', toolCallId: 'missing-workspace', toolId: 'file_read',
+      args: { path: 'relative.txt' },
+    })).rejects.toMatchObject({ code: 'WORKSPACE_REQUIRED' })
+    expect(runnerCalls).toHaveLength(0)
   })
 
   it('keeps fetched page text out of the persisted tool receipt', async () => {

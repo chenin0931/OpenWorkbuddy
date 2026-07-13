@@ -27,11 +27,12 @@ async function installMockBridge(page: Page, onboarding: boolean, failModelSecre
       runStatus: statusUxRunStatus || (presentationMode || turnGroupingRegressionMode ? 'completed' : timelineRegressionMode ? 'running' : 'waiting_approval'),
       followUpContent: undefined as string | undefined,
       permissionMode: 'balanced' as string,
+      accessMode: 'approval' as 'approval' | 'full_disk',
     }
     const workspace = { id: 'workspace-1', name: 'WorkBuddy Demo', path: '/tmp/workbuddy-demo', selected: true, createdAt: now, updatedAt: now }
     const model: Record<string, unknown> = { id: 'model-1', name: 'OpenAI 主模型', provider: 'openai', modelId: 'gpt-5.4', isDefault: true, isSubagentDefault: true, keyConfigured: true, createdAt: now, updatedAt: now }
     const run = () => ({
-      id: 'run-1', workspaceId: workspace.id, title: statusUxMode ? '状态展示回归工作' : presentationMode ? '搜索今日新闻' : timelineRegressionMode ? '检查消息时间线' : turnGroupingRegressionMode ? '联网搜索今天新闻' : '完成桌面应用的安全验收', objective: statusUxMode ? '验证工作状态只在有操作价值或验证证据时显示' : presentationMode ? '搜索今日新闻' : timelineRegressionMode ? '检查消息时间线' : turnGroupingRegressionMode ? '联网搜索今天新闻' : '检查实现并生成可验证发行物', status: state.runStatus,
+      id: 'run-1', workspaceId: workspace.id, title: statusUxMode ? '状态展示回归工作' : presentationMode ? '搜索今日新闻' : timelineRegressionMode ? '检查消息时间线' : turnGroupingRegressionMode ? '联网搜索今天新闻' : '完成桌面应用的安全验收', objective: statusUxMode ? '验证工作状态只在有操作价值或验证证据时显示' : presentationMode ? '搜索今日新闻' : timelineRegressionMode ? '检查消息时间线' : turnGroupingRegressionMode ? '联网搜索今天新闻' : '检查实现并生成可验证发行物', status: state.runStatus, accessMode: state.accessMode,
       ...(presentationMode || statusUxScenarioMode === 'current-partial' ? { outcome: 'partial', summary: '两条来源已读取，仍有一项待交叉核验。' } : statusUxScenarioMode === 'ordinary-completed' || statusUxScenarioMode === 'current-verified' ? { outcome: 'verified', summary: '工作内容已回复。' } : {}),
       model: { profileId: model.id, provider: model.provider, modelId: model.modelId, capabilities: {} },
       limits: { maxModelTurns: 60, maxDurationMs: 7_200_000, maxSubagents: 3, maxParallelReadTools: 4 }, modelTurns: 18,
@@ -90,6 +91,11 @@ async function installMockBridge(page: Page, onboarding: boolean, failModelSecre
       },
       runs: {
         list: async () => ({ items: onboardingMode ? [] : [run()] }),
+        create: async (input: Record<string, unknown>) => {
+          state.accessMode = input.accessMode === 'full_disk' ? 'full_disk' : 'approval'
+          ;(window as typeof window & { __lastCreateRunInput?: Record<string, unknown> }).__lastCreateRunInput = input
+          return run()
+        },
         get: async () => {
           if (state.followUpContent) {
             ;(window as typeof window & { __followUpDetailReloaded?: boolean }).__followUpDetailReloaded = true
@@ -141,11 +147,13 @@ async function installMockBridge(page: Page, onboarding: boolean, failModelSecre
           }
         },
         respondToApproval: async () => { state.approvalPending = false; state.runStatus = 'running' },
-        sendMessage: async ({ content }: { content: string }) => {
+        sendMessage: async ({ content, accessMode }: { content: string; accessMode?: 'approval' | 'full_disk' }) => {
+          ;(window as typeof window & { __lastSendMessageInput?: Record<string, unknown> }).__lastSendMessageInput = { content, accessMode }
           ;(window as typeof window & { __sendMessageStarted?: boolean; __sendMessageSettled?: boolean }).__sendMessageStarted = true
           ;(window as typeof window & { __sendMessageStarted?: boolean; __sendMessageSettled?: boolean }).__sendMessageSettled = false
           await new Promise((resolve) => window.setTimeout(resolve, 650))
           state.followUpContent = content
+          state.accessMode = accessMode === 'full_disk' ? 'full_disk' : 'approval'
           ;(window as typeof window & { __sendMessageStarted?: boolean; __sendMessageSettled?: boolean }).__sendMessageSettled = true
         },
         pause: async () => undefined,
@@ -181,8 +189,8 @@ test('首次启动完成模型、工作区和执行边界配置', async ({ page 
   await onboarding.getByRole('button', { name: '选择文件夹' }).click()
   await expect(onboarding.getByRole('heading', { name: '连接 Chrome' })).toBeVisible()
   await onboarding.getByRole('button', { name: /继续/ }).click()
-  await expect(onboarding.getByRole('heading', { name: '选择权限级别' })).toBeVisible()
-  await expect(onboarding.getByRole('radio', { name: /平衡/ })).toHaveAttribute('aria-checked', 'true')
+  await expect(onboarding.getByRole('heading', { name: '确认工作方式' })).toBeVisible()
+  await expect(onboarding).toContainText('在输入框“添加文件”左侧选择“请求批准”或“完全访问”')
   await onboarding.getByRole('button', { name: '进入工作台' }).click()
   await expect(onboarding).toBeHidden()
 })
@@ -191,9 +199,8 @@ test('Kimi 设置支持目录、品牌样式，并在失败与取消后清空假
   await installMockBridge(page, false, true)
   await page.goto('/')
   await page.getByRole('button', { name: '设置' }).click()
-  await expect(page.getByRole('radio', { name: /平衡/ })).toHaveAttribute('aria-checked', 'true')
-  await page.getByRole('radio', { name: /高效/ }).click()
-  await expect(page.getByRole('radio', { name: /高效/ })).toHaveAttribute('aria-checked', 'true')
+  await expect(page.getByRole('heading', { name: '工作权限' })).toBeVisible()
+  await expect(page.getByText('新工作和追问时，在“添加文件”左侧选择“请求批准”或“完全访问”。')).toBeVisible()
   await page.getByRole('button', { name: /添加配置/ }).click()
 
   const addDialog = page.getByRole('dialog', { name: '添加模型配置' })
@@ -247,6 +254,46 @@ test('工作台支持确认、添加文件与持久化 Diff 预览', async ({ pa
   await expect(inspector.getByText('tool-broker.ts', { exact: true }).first()).toBeVisible()
   await inspector.getByRole('button', { name: '查看', exact: true }).click()
   await expect(page.getByRole('dialog', { name: 'tool-broker.ts' })).toContainText('WorkBuddy 保存的本地文件变更')
+})
+
+test('新工作与追问可在添加文件左侧选择文件访问权限，并随请求持久化', async ({ page }) => {
+  await installMockBridge(page, false, false, false, true)
+  await page.goto('/')
+
+  const runningAccess = page.getByLabel('文件访问权限')
+  await expect(runningAccess).toHaveValue('approval')
+  const runningOrder = await runningAccess.evaluate((select) => {
+    const addFile = select.parentElement?.querySelector<HTMLButtonElement>('.attachment-button')
+    return Boolean(addFile && (select.compareDocumentPosition(addFile) & Node.DOCUMENT_POSITION_FOLLOWING))
+  })
+  expect(runningOrder).toBe(true)
+
+  await runningAccess.selectOption('full_disk')
+  await page.getByPlaceholder('继续补充、调整方向或交代下一步…').fill('继续检查桌面上的资料')
+  await page.getByRole('button', { name: '发送' }).click()
+  await expect.poll(() => page.evaluate(() => (window as typeof window & { __lastSendMessageInput?: Record<string, unknown> }).__lastSendMessageInput)).toMatchObject({
+    content: '继续检查桌面上的资料',
+    accessMode: 'full_disk',
+  })
+  await expect.poll(() => runningAccess.inputValue()).toBe('full_disk')
+
+  await page.locator('.new-task-button').click()
+  await expect(page.getByRole('heading', { name: '从这里开始一项工作' })).toBeVisible()
+  const newRunAccess = page.getByLabel('文件访问权限')
+  await expect(newRunAccess).toHaveValue('approval')
+  const newRunOrder = await newRunAccess.evaluate((select) => {
+    const addFile = select.parentElement?.querySelector<HTMLButtonElement>('.attachment-button')
+    return Boolean(addFile && (select.compareDocumentPosition(addFile) & Node.DOCUMENT_POSITION_FOLLOWING))
+  })
+  expect(newRunOrder).toBe(true)
+
+  await newRunAccess.selectOption('full_disk')
+  await page.getByPlaceholder('描述你想完成的工作…').fill('整理整个磁盘中的项目资料')
+  await page.getByRole('button', { name: '开始工作' }).click()
+  await expect.poll(() => page.evaluate(() => (window as typeof window & { __lastCreateRunInput?: Record<string, unknown> }).__lastCreateRunInput)).toMatchObject({
+    objective: '整理整个磁盘中的项目资料',
+    accessMode: 'full_disk',
+  })
 })
 
 test('工作结果安全渲染 Markdown、过滤空消息并保持可追问', async ({ page }) => {

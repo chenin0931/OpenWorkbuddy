@@ -15,6 +15,7 @@ import type {
   PlanStepItem,
   PersistentGrantItem,
   RunDetailView,
+  RunAccessMode,
   RunItem,
   RunStatus,
   SourceItem,
@@ -148,6 +149,8 @@ function normalizeRun(value: unknown, index: number): RunItem {
   const goal = textValue(source, ['goal', 'objective'])
   const workspaceId = textValue(source, ['workspaceId', 'workspace_id'])
   const modelProfileId = textValue(source, ['modelProfileId', 'model_profile_id']) || textValue(record(source.model), ['profileId'])
+  const accessModeValue = textValue(source, ['accessMode', 'access_mode'], 'approval')
+  const accessMode: RunAccessMode = accessModeValue === 'full_disk' ? 'full_disk' : 'approval'
   const createdAt = textValue(source, ['createdAt', 'created_at'])
   const updatedAt = textValue(source, ['updatedAt', 'updated_at'])
   const result = textValue(source, ['result', 'outcome', 'completionStatus'])
@@ -155,6 +158,7 @@ function normalizeRun(value: unknown, index: number): RunItem {
   if (goal) item.goal = goal
   if (workspaceId) item.workspaceId = workspaceId
   if (modelProfileId) item.modelProfileId = modelProfileId
+  item.accessMode = accessMode
   if (createdAt) item.createdAt = createdAt
   if (updatedAt) item.updatedAt = updatedAt
   if (result === 'verified' || result === 'partial') item.result = result
@@ -622,9 +626,9 @@ export const bridge = {
     { path: 'runs.create', args: [input] },
     { path: 'createRun', args: [input] },
   ]),
-  sendMessage: (runId: string, content: string, attachmentIds: string[] = []) => call<unknown>([
-    { path: 'runs.sendMessage', args: [{ runId, content, ...(attachmentIds.length ? { attachmentIds } : {}) }] },
-    { path: 'sendMessage', args: [{ runId, content, attachmentIds }] },
+  sendMessage: (runId: string, content: string, accessMode: RunAccessMode, attachmentIds: string[] = []) => call<unknown>([
+    { path: 'runs.sendMessage', args: [{ runId, content, accessMode, ...(attachmentIds.length ? { attachmentIds } : {}) }] },
+    { path: 'sendMessage', args: [{ runId, content, accessMode, attachmentIds }] },
   ]),
   pauseRun: (runId: string) => call<unknown>([
     { path: 'runs.pause', args: [{ id: runId }] },

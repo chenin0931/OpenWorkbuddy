@@ -21,6 +21,8 @@ export type RunStatus =
 
 export type JsonRecord = Record<string, unknown>
 
+export type RunAccessMode = 'approval' | 'full_disk'
+
 export interface WorkspaceItem extends JsonRecord {
   id: string
   name: string
@@ -37,6 +39,7 @@ export interface RunItem extends JsonRecord {
   result?: 'verified' | 'partial'
   workspaceId?: string
   modelProfileId?: string
+  accessMode?: RunAccessMode
   createdAt?: string
   updatedAt?: string
 }

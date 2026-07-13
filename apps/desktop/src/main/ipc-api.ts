@@ -121,8 +121,8 @@ export class IpcApi {
         return { items: rows.map((row) => presentRunSummary(row, profiles.find((profile) => profile.id === row.modelProfileId) ?? this.snapshotProfile(row))) }
       },
       'runs:get': ({ id }) => this.coordinator.getDetail(id),
-      'runs:create': (input) => this.coordinator.create({ workspaceId: input.workspaceId, objective: input.objective, mode: input.mode, title: input.title, modelProfileId: input.modelProfileId, limits: input.limits, attachmentIds: input.attachmentIds, readOnly: input.mode === 'plan' }),
-      'runs:send-message': async ({ runId, content, attachmentIds }) => { await this.coordinator.sendMessage(runId, content, attachmentIds) },
+      'runs:create': (input) => this.coordinator.create({ workspaceId: input.workspaceId, objective: input.objective, accessMode: input.accessMode, mode: input.mode, title: input.title, modelProfileId: input.modelProfileId, limits: input.limits, attachmentIds: input.attachmentIds, readOnly: input.mode === 'plan' }),
+      'runs:send-message': async ({ runId, content, accessMode, attachmentIds }) => { await this.coordinator.sendMessage(runId, content, accessMode, attachmentIds) },
       'runs:pause': ({ id }) => this.coordinator.pause(id),
       'runs:resume': ({ id }) => this.coordinator.resume(id),
       'runs:cancel': ({ id }) => this.coordinator.cancel(id),
@@ -343,6 +343,17 @@ export class IpcApi {
         const run = this.database.getRun(diff.run_id)
         const workspace = this.database.getWorkspace(run?.workspaceId)
         if (!run || !workspace?.root_path) throw new Error('Diff 所属工作区已不可用')
+        const mutationAccessMode = metadata.accessModeAtMutation === 'full_disk' ? 'full_disk' : 'approval'
+        const workspaceRelativePath = relative(workspace.root_path, path)
+        const pathIsOutsideWorkspace = workspaceRelativePath === '..'
+          || workspaceRelativePath.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`)
+          || isAbsolute(workspaceRelativePath)
+        if (mutationAccessMode === 'full_disk' && pathIsOutsideWorkspace && run.accessMode !== 'full_disk') {
+          throw Object.assign(
+            new Error('该变更是在“完全访问”下创建的。请先把当前工作的文件访问切回“完全访问”，再撤销。'),
+            { code: 'FULL_DISK_ACCESS_REQUIRED' },
+          )
+        }
         let content = ''
         if (!createdFile) {
           const snapshotId = typeof metadata.snapshotArtifactId === 'string' ? metadata.snapshotArtifactId : ''
@@ -350,7 +361,13 @@ export class IpcApi {
           if (!snapshot || snapshot.kind !== 'file_snapshot' || snapshot.run_id !== diff.run_id) throw new Error('原文件快照不存在')
           content = (await readFile(snapshot.path)).toString('utf8')
         }
-        await this.runner.execute({ runId: run.id, toolId: 'file.restore', workspacePath: workspace.root_path, args: { path, content, expectedCurrentSha256: afterSha256, createdFile } })
+        await this.runner.execute({
+          runId: run.id,
+          toolId: 'file.restore',
+          workspacePath: workspace.root_path,
+          authorizedRoot: run.accessMode === 'full_disk' ? '/' : workspace.root_path,
+          args: { path, content, expectedCurrentSha256: afterSha256, createdFile },
+        })
         this.database.audit('artifact', 'undo_change', `已撤销 ${basename(path)} 的 Agent 变更`, { actor: 'user', outcome: 'succeeded', target: path }, run.id)
         return { restored: true as const, path, createdFileRemoved: createdFile }
       },

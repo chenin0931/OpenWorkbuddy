@@ -161,6 +161,8 @@ export type ToolRunnerCommand =
       /** Runtime-schema validated JSON; `any` preserves compatibility with tool-specific handlers. */
       args: Record<string, any>
       workspacePath?: string
+      /** Filesystem authorization root. Relative paths still resolve from workspacePath. */
+      authorizedRoot?: string
       mcpServer?: Record<string, any>
     })
   | (WorkerMessageBase & { type: 'cancel'; requestId: string })
@@ -304,7 +306,7 @@ export const PiAgentHostEventSchema = z.union([
 ])
 
 export const ToolRunnerCommandSchema = z.discriminatedUnion('type', [
-  z.object({ protocolVersion: ProtocolSchema, type: z.literal('execute'), requestId: IdSchema, runId: IdSchema, toolId: IdSchema, args: z.record(z.string(), JsonValueSchema), workspacePath: z.string().min(1).optional(), mcpServer: z.record(z.string(), JsonValueSchema).optional() }).strict(),
+  z.object({ protocolVersion: ProtocolSchema, type: z.literal('execute'), requestId: IdSchema, runId: IdSchema, toolId: IdSchema, args: z.record(z.string(), JsonValueSchema), workspacePath: z.string().min(1).optional(), authorizedRoot: z.string().min(1).optional(), mcpServer: z.record(z.string(), JsonValueSchema).optional() }).strict(),
   z.object({ protocolVersion: ProtocolSchema, type: z.literal('cancel'), requestId: IdSchema }).strict(),
 ])
 

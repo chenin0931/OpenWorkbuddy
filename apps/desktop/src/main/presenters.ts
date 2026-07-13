@@ -120,6 +120,7 @@ export function presentRun(row: any, fallbackModel: ModelProfile): Run {
   return {
     id: row.id,
     workspaceId: row.workspaceId ?? row.workspace_id ?? '',
+    accessMode: row.accessMode ?? row.access_mode ?? 'approval',
     title: row.title,
     objective: row.goal ?? row.prompt ?? row.objective,
     status,

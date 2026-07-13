@@ -85,6 +85,7 @@ export class AppDatabase {
         outcome TEXT,
         mode TEXT NOT NULL DEFAULT 'act',
         read_only INTEGER NOT NULL DEFAULT 0,
+        access_mode TEXT NOT NULL DEFAULT 'approval' CHECK(access_mode IN ('approval','full_disk')),
         workspace_id TEXT REFERENCES workspaces(id) ON DELETE SET NULL,
         model_profile_id TEXT REFERENCES model_profiles(id) ON DELETE SET NULL,
         model_snapshot_json TEXT NOT NULL DEFAULT '{}',
@@ -263,6 +264,9 @@ export class AppDatabase {
     if (!runColumns.some((column) => column.name === 'read_only')) {
       this.db.exec('ALTER TABLE runs ADD COLUMN read_only INTEGER NOT NULL DEFAULT 0')
     }
+    if (!runColumns.some((column) => column.name === 'access_mode')) {
+      this.db.exec("ALTER TABLE runs ADD COLUMN access_mode TEXT NOT NULL DEFAULT 'approval' CHECK(access_mode IN ('approval','full_disk'))")
+    }
     if (!runColumns.some((column) => column.name === 'active_duration_ms')) {
       this.db.exec('ALTER TABLE runs ADD COLUMN active_duration_ms INTEGER NOT NULL DEFAULT 0')
     }
@@ -383,10 +387,10 @@ export class AppDatabase {
 
   createRun(input: any): any {
     const id = randomUUID(); const timestamp = now()
-    this.db.prepare(`INSERT INTO runs(id,title,prompt,status,mode,read_only,workspace_id,model_profile_id,model_snapshot_json,limits_json,parent_run_id,goal,created_at,updated_at)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id, input.title || input.prompt.slice(0, 48), input.prompt, 'understanding', input.mode ?? 'act', input.readOnly ? 1 : 0, input.workspaceId ?? null, input.modelProfileId ?? null, json(input.modelSnapshot ?? {}), json(input.limits ?? {}), input.parentRunId ?? null, input.prompt, timestamp, timestamp)
+    this.db.prepare(`INSERT INTO runs(id,title,prompt,status,mode,read_only,access_mode,workspace_id,model_profile_id,model_snapshot_json,limits_json,parent_run_id,goal,created_at,updated_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id, input.title || input.prompt.slice(0, 48), input.prompt, 'understanding', input.mode ?? 'act', input.readOnly ? 1 : 0, input.accessMode ?? 'approval', input.workspaceId ?? null, input.modelProfileId ?? null, json(input.modelSnapshot ?? {}), json(input.limits ?? {}), input.parentRunId ?? null, input.prompt, timestamp, timestamp)
     this.addMessage(id, 'user', input.prompt)
-    this.appendRunEvent(id, 'run.created', '任务已创建', { mode: input.mode ?? 'act' })
+    this.appendRunEvent(id, 'run.created', '任务已创建', { mode: input.mode ?? 'act', accessMode: input.accessMode ?? 'approval' })
     return this.getRun(id)
   }
 
@@ -411,6 +415,7 @@ export class AppDatabase {
       activeSegmentStartedAt: run.active_segment_started_at ?? undefined,
       parentRunId: run.parent_run_id,
       readOnly: Boolean(run.read_only),
+      accessMode: run.access_mode === 'full_disk' ? 'full_disk' : 'approval',
       startedAt: run.started_at,
       finishedAt: run.finished_at,
       createdAt: run.created_at,
@@ -449,11 +454,35 @@ export class AppDatabase {
 
   updateRun(id: string, patch: any): void {
     const fields: [string, unknown][] = []
-    const map: Record<string, string> = { status: 'status', outcome: 'outcome', summary: 'summary', error: 'error', title: 'title', goal: 'goal', startedAt: 'started_at', finishedAt: 'finished_at', modelTurns: 'model_turns' }
+    const map: Record<string, string> = { status: 'status', outcome: 'outcome', summary: 'summary', error: 'error', title: 'title', goal: 'goal', accessMode: 'access_mode', startedAt: 'started_at', finishedAt: 'finished_at', modelTurns: 'model_turns' }
     for (const [key, column] of Object.entries(map)) if (key in patch) fields.push([column, patch[key]])
     if (!fields.length) return
     fields.push(['updated_at', now()])
     this.db.prepare(`UPDATE runs SET ${fields.map(([column]) => `${column}=?`).join(',')} WHERE id=?`).run(...fields.map(([, value]) => value ?? null), id)
+  }
+
+  downgradeDescendantAccess(runId: string): { runIds: string[]; activeRunIds: string[] } {
+    const rows = this.db.prepare(`
+      WITH RECURSIVE descendants(id) AS (
+        SELECT id FROM runs WHERE parent_run_id=?
+        UNION ALL
+        SELECT child.id FROM runs child JOIN descendants parent ON child.parent_run_id=parent.id
+      )
+      SELECT runs.id,runs.status FROM runs
+      JOIN descendants ON descendants.id=runs.id
+      WHERE runs.access_mode='full_disk'
+    `).all(runId) as Array<{ id: string; status: string }>
+    if (!rows.length) return { runIds: [], activeRunIds: [] }
+
+    const timestamp = now()
+    this.db.transaction(() => {
+      const update = this.db.prepare("UPDATE runs SET access_mode='approval',updated_at=? WHERE id=? AND access_mode='full_disk'")
+      for (const row of rows) update.run(timestamp, row.id)
+    })()
+    const activeRunIds = rows
+      .filter((row) => ['planning', 'running', 'verifying', 'waiting_approval'].includes(row.status))
+      .map((row) => row.id)
+    return { runIds: rows.map((row) => row.id), activeRunIds }
   }
 
   /**

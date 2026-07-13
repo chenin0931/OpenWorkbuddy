@@ -15,7 +15,6 @@ import {
   IconButton,
   Modal,
   PageHeader,
-  PermissionModePicker,
   Spinner,
   SubmitForm,
   Toggle,
@@ -154,12 +153,9 @@ export function SettingsPage({ snapshot, selectedWorkspaceId, perform, onWorkspa
         <SettingRow title="启用记忆建议" detail="工作收尾时允许 WorkBuddy 提出带来源的候选记忆。"><Toggle checked={settings.memoryEnabled !== false} label="启用记忆" onChange={(checked) => void perform(() => bridge.updateSettings({ memoryEnabled: checked }), checked ? '记忆建议已启用' : '记忆建议已关闭')} /></SettingRow>
       </SettingsSection>
 
-      <SettingsSection icon="lock" title="权限级别" description="选择本机低风险动作的自动化程度；安全边界由执行层强制保证。">
-        <PermissionModePicker
-          value={settings.permissionMode ?? 'balanced'}
-          onChange={(permissionMode) => void perform(() => bridge.updateSettings({ permissionMode }), '权限级别已更新')}
-        />
-        <p className="permission-mode-note"><Icon name="shield" size={14} />无论选择哪一级，发送、发布、支付、删除、网络命令和未知外部操作都必须确认。</p>
+      <SettingsSection icon="lock" title="工作权限" description="文件访问范围按工作选择，不设置覆盖所有工作的全局自动化级别。">
+        <SettingRow title="在输入框中选择" detail="新工作和追问时，在“添加文件”左侧选择“请求批准”或“完全访问”。"><span className="default-pill">按工作保存</span></SettingRow>
+        <div className="inline-notice"><Icon name="shield" /><span>完全访问会把当前工作的文件授权根扩展到整个磁盘；删除、发送、发布、搜索查询、网络命令和其他外部副作用仍需确认。</span></div>
       </SettingsSection>
 
       <SettingsSection icon="shield" title="默认处理方式" description="只影响新工作；先整理计划时，宿主只提供只读能力。">

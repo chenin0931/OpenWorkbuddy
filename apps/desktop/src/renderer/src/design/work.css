@@ -108,6 +108,8 @@
 .run-composer-bottom { display: flex; align-items: center; justify-content: space-between; }
 .run-composer-bottom > span { display: flex; align-items: center; gap: 8px; color: var(--text-tertiary); font-size: 11px; }
 .attachment-button.compact { height: 28px; padding: 0 7px; background: transparent; border-color: transparent; }
+.access-mode-select.compact { height: 28px; padding: 0 23px 0 7px; background-color: transparent; border-color: transparent; }
+.access-mode-select.compact:hover { color: var(--text); background-color: var(--surface-hover); }
 .composer-context { display: inline-flex; align-items: center; gap: 4px; }
 
 .inspector { position: relative; display: flex; width: clamp(300px, 23vw, 350px); min-width: 300px; max-width: 420px; height: 100%; overflow: hidden; background: var(--surface-subtle); border-left: 1px solid var(--separator); animation: inspectorIn var(--motion-panel) var(--ease-out); flex-direction: column; }

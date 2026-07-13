@@ -7,7 +7,7 @@ import {
   type ReactNode,
 } from 'react'
 import { Icon, type IconName } from './icons'
-import type { PermissionMode, RunStatus, ToastMessage } from './types'
+import type { RunStatus, ToastMessage } from './types'
 
 export function Spinner({ size = 18 }: { size?: number }) {
   return <span className="spinner" style={{ width: size, height: size }} role="status" aria-label="加载中" />
@@ -165,44 +165,6 @@ export function Toggle({
     >
       <span />
     </button>
-  )
-}
-
-const PERMISSION_MODES: Array<{
-  id: PermissionMode
-  title: string
-  detail: string
-  icon: IconName
-  badge?: string
-}> = [
-  { id: 'cautious', title: '谨慎', detail: '只读自动；搜索、写入和命令逐次确认。', icon: 'shield' },
-  { id: 'balanced', title: '平衡', detail: '公开搜索、带快照写入和检查命令自动。', icon: 'check', badge: '推荐' },
-  { id: 'autonomous', title: '高效', detail: '再自动运行本地可逆命令；外部操作仍确认。', icon: 'activity' },
-]
-
-export function PermissionModePicker({
-  value,
-  onChange,
-}: {
-  value: PermissionMode
-  onChange: (value: PermissionMode) => void
-}) {
-  return (
-    <div className="permission-mode-grid" role="radiogroup" aria-label="权限级别">
-      {PERMISSION_MODES.map((mode) => (
-        <button
-          key={mode.id}
-          type="button"
-          role="radio"
-          aria-checked={value === mode.id}
-          className={value === mode.id ? 'is-active' : ''}
-          onClick={() => onChange(mode.id)}
-        >
-          <span className="permission-mode-icon"><Icon name={mode.icon} size={16} /></span>
-          <span><strong>{mode.title}{mode.badge && <em>{mode.badge}</em>}</strong><small>{mode.detail}</small></span>
-        </button>
-      ))}
-    </div>
   )
 }
 

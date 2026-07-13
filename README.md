@@ -27,8 +27,11 @@ boundaries rather than a chat wrapper.
 
 - OpenAI, Anthropic and Kimi/Moonshot model profiles with replaceable BYOK keys.
 - Permissioned file access, stale-write protection, snapshots, Diff and undo.
-- Three permission levels for low-risk local work, with external, destructive
-  and irreversible actions kept behind approval.
+- Per-work access switch beside “Add files”: keep the project boundary and
+  request approval, or explicitly grant full-disk local access for that work.
+- The access choice is made in each work composer, persists with that work and
+  does not create a broad global default. External, destructive and irreversible
+  actions stay behind approval in either mode.
 - Shell execution with a strict read-only allowlist and deterministic risk policy.
 - Web Search and safe Web Fetch with redirect, address and response-size checks.
 - MCP stdio and Streamable HTTP, encrypted secrets and OAuth PKCE.
@@ -125,7 +128,8 @@ the Chrome/Native Host READMEs for local bridge installation.
 
 - The Renderer has no Node integration, model key or filesystem authority.
 - Model tool requests must pass through Main-process policy and approval checks.
-- Workspace file access uses real-path, symlink and path-traversal checks.
+- File access uses real-path, symlink and path-traversal checks. Full-disk mode
+  is explicit, persisted per work and still subject to macOS privacy controls.
 - Approved Shell commands and user-installed stdio MCP servers are local code;
   Electron utility processes are not an OS hard sandbox.
 - Authorized browser or file content may be sent to the user's configured model

@@ -102,6 +102,7 @@ describe('AppDatabase persistence boundary', () => {
         encryptedKey: encryptedBytes,
       })
       expect(database.db.prepare('SELECT model_profile_id FROM runs WHERE id=?').get('legacy-run')).toEqual({ model_profile_id: 'legacy-profile' })
+      expect(database.getRun('legacy-run')).toMatchObject({ accessMode: 'approval' })
       expect(database.db.prepare('SELECT model_profile_id FROM automations WHERE id=?').get('legacy-automation')).toEqual({ model_profile_id: 'legacy-profile' })
 
       const kimiProfileId = database.saveModelProfile({ name: 'Kimi Code', provider: 'moonshotai-cn', modelId: 'kimi-k2.7-code' })
@@ -125,15 +126,18 @@ describe('AppDatabase persistence boundary', () => {
       modelSnapshot: { profileId, provider: 'openai', modelId: 'gpt-test', capabilities: { contextWindow: 128_000 } },
       limits: { maxModelTurns: 60 },
       readOnly: true,
+      accessMode: 'full_disk',
     })
     database.updateRun(run.id, { status: 'paused', summary: 'checkpoint' })
     database.close()
 
     const reopened = new AppDatabase(path)
     const restored = reopened.getRun(run.id)
-    expect(restored).toMatchObject({ id: run.id, status: 'paused', summary: 'checkpoint', workspaceId, modelProfileId: profileId, readOnly: true })
+    expect(restored).toMatchObject({ id: run.id, status: 'paused', summary: 'checkpoint', workspaceId, modelProfileId: profileId, readOnly: true, accessMode: 'full_disk' })
     expect(restored.messages).toHaveLength(1)
     expect(restored.messages[0]).toMatchObject({ role: 'user', content: 'Inspect the workspace' })
+    reopened.updateRun(run.id, { accessMode: 'approval' })
+    expect(reopened.getRun(run.id)).toMatchObject({ accessMode: 'approval' })
     reopened.close()
   })
 

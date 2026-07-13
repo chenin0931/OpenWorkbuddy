@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto'
 import { promises as dns } from 'node:dns'
-import { link, lstat, mkdir, open, readFile, realpath, rename, stat, unlink } from 'node:fs/promises'
+import { copyFile, link, lstat, mkdir, open, readFile, realpath, rename, stat, unlink } from 'node:fs/promises'
 import { request as httpRequest, type IncomingHttpHeaders } from 'node:http'
 import { request as httpsRequest } from 'node:https'
 import { isIP } from 'node:net'
@@ -478,11 +478,17 @@ export async function safeWebSearch(
   }
 }
 
-export async function resolveAuthorizedPath(rootInput: string | undefined, targetInput: string, allowMissing = false): Promise<{ root: string; target: string }> {
+export async function resolveAuthorizedPath(
+  rootInput: string | undefined,
+  targetInput: string,
+  allowMissing = false,
+  relativeBaseInput?: string,
+): Promise<{ root: string; target: string; relativeBase: string }> {
   if (!rootInput) throw Object.assign(new Error('未授权工作区'), { code: 'WORKSPACE_REQUIRED' })
   const root = await realpath(rootInput)
-  const requested = isAbsolute(targetInput) ? resolve(targetInput) : resolve(root, targetInput)
-  if (!isWithin(root, requested)) throw Object.assign(new Error('路径超出授权工作区'), { code: 'PATH_OUTSIDE_WORKSPACE' })
+  const relativeBase = await realpath(relativeBaseInput ?? rootInput)
+  if (!isWithin(root, relativeBase)) throw Object.assign(new Error('相对路径基准超出授权范围'), { code: 'PATH_OUTSIDE_WORKSPACE' })
+  const requested = isAbsolute(targetInput) ? resolve(targetInput) : resolve(relativeBase, targetInput)
   let target: string
   try {
     target = await realpath(requested)
@@ -494,7 +500,7 @@ export async function resolveAuthorizedPath(rootInput: string | undefined, targe
     target = join(realParent, basename(requested))
   }
   if (!isWithin(root, target)) throw Object.assign(new Error('路径超出授权工作区'), { code: 'PATH_OUTSIDE_WORKSPACE' })
-  return { root, target }
+  return { root, target, relativeBase }
 }
 
 const assertExpectedHash = (value: unknown, field = 'expectedSha256'): string => {
@@ -580,8 +586,8 @@ const createFileExclusively = async (target: string, content: string): Promise<v
   }
 }
 
-export async function writeFileSafely(rootInput: string | undefined, pathInput: string, content: string, expectedSha256?: unknown): Promise<Record<string, unknown>> {
-  const { target } = await resolveAuthorizedPath(rootInput, pathInput, true)
+export async function writeFileSafely(rootInput: string | undefined, pathInput: string, content: string, expectedSha256?: unknown, relativeBaseInput?: string): Promise<Record<string, unknown>> {
+  const { target } = await resolveAuthorizedPath(rootInput, pathInput, true, relativeBaseInput)
   let exists = true
   try {
     const info = await lstat(target)
@@ -611,8 +617,9 @@ export async function replaceFileTextSafely(
   newText: string,
   replaceAll: boolean,
   expectedSha256: unknown,
+  relativeBaseInput?: string,
 ): Promise<Record<string, unknown>> {
-  const { target } = await resolveAuthorizedPath(rootInput, pathInput)
+  const { target } = await resolveAuthorizedPath(rootInput, pathInput, false, relativeBaseInput)
   const expected = assertExpectedHash(expectedSha256)
   const initial = await currentRegularFile(target, expected)
   const before = initial.content.toString('utf8')
@@ -630,8 +637,10 @@ export async function restoreFileSafely(
   content: string,
   expectedCurrentSha256: unknown,
   createdFile: boolean,
+  relativeBaseInput?: string,
+  trashRootInput?: string,
 ): Promise<Record<string, unknown>> {
-  const { root, target } = await resolveAuthorizedPath(rootInput, pathInput)
+  const { root, target } = await resolveAuthorizedPath(rootInput, pathInput, false, relativeBaseInput)
   const expected = assertExpectedHash(expectedCurrentSha256, 'expectedCurrentSha256')
   const current = await currentRegularFile(target, expected)
 
@@ -648,22 +657,61 @@ export async function restoreFileSafely(
     }
   }
 
-  const trashInput = join(root, '.on-my-workbuddy-trash')
-  await mkdir(trashInput, { mode: 0o700, recursive: true })
-  const trash = await realpath(trashInput)
-  if (!isWithin(root, trash)) throw Object.assign(new Error('工作区回收站路径不安全'), { code: 'PATH_OUTSIDE_WORKSPACE' })
-  await currentRegularFile(target, expected)
-  const destination = join(trash, `${Date.now()}-${randomBytes(12).toString('hex')}-${basename(target)}`)
-  await rename(target, destination)
-  await syncDirectory(dirname(target))
-  await syncDirectory(trash)
+  const moved = await moveCurrentFileToTrash(root, target, expected, trashRootInput ?? relativeBaseInput ?? root)
   return {
     path: target,
     restored: true,
     removedCreatedFile: true,
-    trashedTo: destination,
+    trashedTo: moved.destination,
     beforeSha256: expected,
     size: current.content.byteLength,
+  }
+}
+
+async function moveCurrentFileToTrash(root: string, target: string, expectedSha256: string, trashRootInput: string): Promise<{ destination: string }> {
+  const trashBase = await realpath(trashRootInput)
+  if (!isWithin(root, trashBase)) throw Object.assign(new Error('任务回收站超出授权范围'), { code: 'PATH_OUTSIDE_WORKSPACE' })
+  const trashInput = join(trashBase, '.on-my-workbuddy-trash')
+  await mkdir(trashInput, { mode: 0o700, recursive: true })
+  const trash = await realpath(trashInput)
+  if (!isWithin(root, trash) || !isWithin(trashBase, trash)) throw Object.assign(new Error('工作区回收站路径不安全'), { code: 'PATH_OUTSIDE_WORKSPACE' })
+  await currentRegularFile(target, expectedSha256)
+  const destination = join(trash, `${Date.now()}-${randomBytes(12).toString('hex')}-${basename(target)}`)
+  try {
+    await rename(target, destination)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EXDEV') throw error
+    await copyFile(target, destination)
+    const copied = await readFile(destination)
+    if (sha256(copied) !== expectedSha256) {
+      await unlink(destination).catch(() => {})
+      throw Object.assign(new Error('跨磁盘移动校验失败'), { code: 'TRASH_COPY_MISMATCH' })
+    }
+    await currentRegularFile(target, expectedSha256)
+    await unlink(target)
+  }
+  await syncDirectory(dirname(target))
+  await syncDirectory(trash)
+  return { destination }
+}
+
+export async function trashFileSafely(
+  rootInput: string | undefined,
+  pathInput: string,
+  relativeBaseInput?: string,
+  trashRootInput?: string,
+): Promise<Record<string, unknown>> {
+  const { root, target } = await resolveAuthorizedPath(rootInput, pathInput, false, relativeBaseInput)
+  const info = await lstat(target)
+  if (!info.isFile()) throw new Error('仅支持删除文件')
+  const before = await readFile(target)
+  const beforeSha256 = sha256(before)
+  const moved = await moveCurrentFileToTrash(root, target, beforeSha256, trashRootInput ?? relativeBaseInput ?? root)
+  return {
+    path: target,
+    trashedTo: moved.destination,
+    beforeSha256,
+    size: before.byteLength,
   }
 }
 

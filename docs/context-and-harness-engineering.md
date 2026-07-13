@@ -259,19 +259,23 @@ Risk levels are:
 | `external_side_effect` | Sends data or changes an external system | Approval; grant is forced to one use |
 | `high_risk_irreversible` | Delete, submit, purchase or equivalent impact | Explicit one-shot approval or deny |
 
-On top of deterministic classification, the user selects a convenience level:
+The user makes one durable per-run access decision beside the composer attachment
+control. `approval` retains the selected project as the authorization root and
+keeps non-read actions behind approval. `full_disk` changes the Runner
+authorization root to `/` and automatically permits only enumerated low-risk
+local actions, such as stale-write-guarded file mutations and recognized local
+validation commands. Search queries, unknown Shell commands and outbound
+actions classified as external side effects remain approval-gated. There is no global `cautious` / `balanced` / `autonomous`
+selector in the product UI.
 
-- `cautious` keeps every non-read action behind approval;
-- `balanced` automatically allows public search, stale-write-guarded workspace
-  writes, and a single recognized validation command;
-- `autonomous` additionally allows local reversible commands that do not send
-  data off-device.
-
-This layer can only turn eligible `require_approval` decisions into `allow`.
-It cannot override `deny`, mutating external side effects, network commands,
-destructive operations or high-risk irreversible actions. Public search is the
-single enumerated outbound-read exception. The Main-process broker remains the
-enforcement point; the model and Renderer cannot promote their own access.
+This per-run mode can only turn eligible `require_approval` decisions into
+`allow`. It cannot override `deny`, mutating external side effects, network
+commands, destructive operations or high-risk irreversible actions. The
+Main-process broker remains the enforcement point; the model and Renderer cannot
+promote their own access. The project
+workspace remains the relative-path base, Shell cwd and source of workspace
+rules. Destructive or off-device actions are never relaxed by this switch, and
+macOS TCC remains the final OS-level boundary.
 
 High-risk and external-side-effect grants cannot silently become broad permanent
 authority. Non-idempotent actions are never automatically replayed after an
@@ -282,7 +286,7 @@ and [`packages/core/src/approval.ts`](../packages/core/src/approval.ts).
 
 ### File mutation controls
 
-File tools operate only inside user-authorized roots. Before mutation the Runner
+File tools operate only inside the run's user-authorized root. Before mutation the Runner
 checks real paths, path traversal and symlink escape. Replacing an existing file
 requires the SHA-256 value observed during the prior read.
 

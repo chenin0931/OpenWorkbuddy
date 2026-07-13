@@ -3,7 +3,7 @@ import { constants } from 'node:fs'
 import { lstat, open, realpath } from 'node:fs/promises'
 import { isAbsolute, relative, resolve, sep } from 'node:path'
 import type { ApprovalRequest, ApprovalResponse, JsonValue, MemoryEntry, RunEvent, TaskStep, ToolCall, ToolDescriptor, VerificationSummary } from '@onmyworkbuddy/contracts'
-import { createApprovalRequest, evaluateCompletionGate, evaluateToolPolicy, evaluateToolPolicyForMode, resolveApproval } from '@onmyworkbuddy/core'
+import { createApprovalRequest, evaluateCompletionGate, evaluateToolPolicy, isValidationShellCommand, resolveApproval } from '@onmyworkbuddy/core'
 import type { AppDatabase } from './database'
 import type { ArtifactStore } from './artifact-store'
 import type { ChromeBridge } from './chrome-bridge'
@@ -119,6 +119,24 @@ function readOnlyRun(raw: any): boolean {
   return Boolean(raw?.readOnly ?? raw?.read_only ?? raw?.permissions?.readOnly)
 }
 
+function evaluateRunAccessPolicy(
+  call: ToolCall,
+  descriptor: ToolDescriptor,
+  accessMode: 'approval' | 'full_disk',
+): ReturnType<typeof evaluateToolPolicy> {
+  const decision = evaluateToolPolicy({ call, descriptor })
+  if (accessMode !== 'full_disk' || decision.effect !== 'require_approval') return decision
+
+  const command = typeof call.arguments === 'object' && call.arguments && !Array.isArray(call.arguments)
+    ? String((call.arguments as Record<string, unknown>).command ?? '')
+    : ''
+  const explicitlyAutomatic = decision.ruleId === 'filesystem.write'
+    || (decision.ruleId === 'shell.unknown-write' && isValidationShellCommand(command))
+  return explicitlyAutomatic
+    ? { ...decision, effect: 'allow', ruleId: `${decision.ruleId}.run-full-disk` }
+    : decision
+}
+
 export class ToolBroker {
   private pendingApprovals = new Map<string, PendingApproval>()
   private fileLeaseTails = new Map<string, Promise<void>>()
@@ -158,8 +176,12 @@ export class ToolBroker {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     }
-    const permissionMode = this.database.getSetting<any>('appSettings', {}).permissionMode ?? 'balanced'
-    const baseDecision = evaluateToolPolicyForMode({ call, descriptor }, permissionMode)
+    // The composer owns this run's durable authority. Ask mode deliberately
+    // uses the conservative base policy; full-disk mode relaxes only the two
+    // local actions enumerated above. It must not inherit unrelated global
+    // conveniences such as outbound search.
+    const accessMode = rawRun.accessMode === 'full_disk' ? 'full_disk' : 'approval'
+    const baseDecision = evaluateRunAccessPolicy(call, descriptor, accessMode)
     const memoryDisabled = tool.id === 'memory_propose' && this.database.getSetting<any>('appSettings', {}).memoryEnabled === false
     const readOnlyViolation = readOnlyRun(rawRun) && (
       tool.risk !== 'read' ||
@@ -215,7 +237,8 @@ export class ToolBroker {
   private async acquireFileLease(run: any, tool: ToolDefinition, args: Record<string, unknown>): Promise<() => void> {
     if (!FILE_MUTATION_TOOLS.has(tool.id) || typeof args.path !== 'string') return () => undefined
     const workspace = this.database.getWorkspace(run.workspaceId ?? run.workspace_id)
-    const root = String(workspace?.root_path ?? '')
+    if (!workspace?.root_path) throw Object.assign(new Error('任务工作区不存在或已被移除'), { code: 'WORKSPACE_REQUIRED' })
+    const root = String(workspace.root_path)
     const absolute = resolve(root, args.path).normalize('NFC')
     const key = process.platform === 'darwin' ? absolute.toLocaleLowerCase('en-US') : absolute
     const previous = this.fileLeaseTails.get(key) ?? Promise.resolve()
@@ -342,9 +365,12 @@ export class ToolBroker {
     }
 
     const run = this.database.getRun(runId)
-    const workspace = this.database.getWorkspace(run?.workspaceId)
-    const preMutationSnapshot = (tool.id === 'file_write' || tool.id === 'file_replace') && workspace?.root_path
-      ? await this.prepareFileSnapshot(runId, requestId, tool, args, workspace.root_path)
+    if (!run) throw Object.assign(new Error('任务不存在'), { code: 'RUN_NOT_FOUND' })
+    const workspace = this.database.getWorkspace(run.workspaceId)
+    if (!workspace?.root_path) throw Object.assign(new Error('任务工作区不存在或已被移除'), { code: 'WORKSPACE_REQUIRED' })
+    const authorizedRoot = run.accessMode === 'full_disk' ? '/' : workspace.root_path
+    const preMutationSnapshot = tool.id === 'file_write' || tool.id === 'file_replace'
+      ? await this.prepareFileSnapshot(runId, requestId, tool, args, workspace.root_path, authorizedRoot)
       : undefined
     let mcpServer: any
     if (tool.id.startsWith('mcp_')) {
@@ -358,15 +384,15 @@ export class ToolBroker {
       if (raw.encrypted_secret) secrets = this.decodeSecret(await this.secrets.decrypt(raw.encrypted_secret))
       mcpServer = { id: raw.id, transport: raw.transport, config: raw.config, ...(secrets ? { secrets } : {}) }
     }
-    const result = await this.runner.execute({ runId, requestId, toolId: tool.runnerId, args, ...(workspace?.root_path ? { workspacePath: workspace.root_path } : {}), ...(mcpServer ? { mcpServer } : {}) }, (progress) => {
+    const result = await this.runner.execute({ runId, requestId, toolId: tool.runnerId, args, workspacePath: workspace.root_path, authorizedRoot, ...(mcpServer ? { mcpServer } : {}) }, (progress) => {
       this.database.appendRunEvent(runId, 'tool.progress', `${tool.label}: ${String(progress.text).slice(-500)}`, { channel: progress.channel })
     })
     return this.captureArtifacts(runId, tool, result, preMutationSnapshot)
   }
 
-  private async prepareFileSnapshot(runId: string, requestId: string, tool: ToolDefinition, args: Record<string, unknown>, workspacePath: string): Promise<any> {
+  private async prepareFileSnapshot(runId: string, requestId: string, tool: ToolDefinition, args: Record<string, unknown>, workspacePath: string, authorizedRoot: string): Promise<any> {
     try {
-      const before = await this.runner.execute({ runId, requestId: `${requestId}-snapshot`, toolId: 'file.read', args: { path: args.path }, workspacePath })
+      const before = await this.runner.execute({ runId, requestId: `${requestId}-snapshot`, toolId: 'file.read', args: { path: args.path }, workspacePath, authorizedRoot })
       if (typeof before?.content !== 'string') throw new Error('写入前快照读取失败')
       if (typeof args.expectedSha256 === 'string' && before.sha256 !== args.expectedSha256) throw Object.assign(new Error('文件在读取后已变化，请重新读取'), { code: 'STALE_WRITE' })
       return this.artifacts.putText({ runId, name: `${String(args.path).split('/').at(-1)}.before`, kind: 'file_snapshot', content: before.content, metadata: { path: before.path, sha256: before.sha256, createdFile: false, capturedBeforeMutation: true } })
@@ -520,7 +546,15 @@ export class ToolBroker {
         kind: 'diff',
         content: diffText,
         mime: 'text/x-diff',
-        metadata: { path: result.path, snapshotArtifactId: snapshot.id, afterSha256, createdFile, additions: String(result.after).split('\n').length, deletions: before ? before.split('\n').length : 0 },
+        metadata: {
+          path: result.path,
+          snapshotArtifactId: snapshot.id,
+          afterSha256,
+          createdFile,
+          accessModeAtMutation: this.database.getRun(runId)?.accessMode ?? 'approval',
+          additions: String(result.after).split('\n').length,
+          deletions: before ? before.split('\n').length : 0,
+        },
       })
       const safe = { ...result }
       delete safe.before

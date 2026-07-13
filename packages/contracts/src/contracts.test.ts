@@ -95,7 +95,7 @@ describe('renderer contracts', () => {
   it('exposes only bounded tool receipts and approval history in run details', () => {
     const detail = RunDetailSchema.parse({
       run: {
-        id: 'run-1', workspaceId: 'workspace-1', title: 'Research', objective: 'Find sources', status: 'completed', completionStatus: 'partial',
+        id: 'run-1', workspaceId: 'workspace-1', accessMode: 'approval', title: 'Research', objective: 'Find sources', status: 'completed', completionStatus: 'partial',
         model: {
           profileId: 'model-1', provider: 'openai', modelId: 'gpt-test',
           capabilities: { contextWindow: 128_000, maxOutputTokens: 16_384, toolCalling: true, vision: false, reasoning: false, promptCaching: true },
@@ -121,6 +121,22 @@ describe('renderer contracts', () => {
     })
     expect(detail.toolCalls[0]?.sources[0]?.domain).toBe('example.com')
     expect(detail.approvalHistory[0]).toMatchObject({ status: 'approved', scope: 'once' })
+  })
+
+  it('validates the per-run full disk authority at create and follow-up boundaries', () => {
+    expect(DesktopInvokeContracts['runs:create'].input.parse({
+      workspaceId: 'workspace-1',
+      objective: 'Inspect another folder',
+      accessMode: 'full_disk',
+    })).toMatchObject({ accessMode: 'full_disk' })
+    expect(DesktopInvokeContracts['runs:send-message'].input.parse({
+      runId: 'run-1',
+      content: 'Continue',
+      accessMode: 'approval',
+    })).toMatchObject({ accessMode: 'approval' })
+    expect(DesktopInvokeContracts['runs:create'].input.safeParse({
+      workspaceId: 'workspace-1', objective: 'Unsafe', accessMode: 'unbounded',
+    }).success).toBe(false)
   })
 
   it('rejects unsafe renderer-visible source URLs', () => {

@@ -100,6 +100,8 @@ export type RunStatus =
   | 'cancelled'
 
 export type CompletionStatus = 'verified' | 'partial'
+/** Per-run filesystem authority selected from the composer. */
+export type RunAccessMode = 'approval' | 'full_disk'
 export type TaskStepStatus = 'pending' | 'in_progress' | 'blocked' | 'completed' | 'failed' | 'skipped'
 export type MessageRole = 'user' | 'assistant' | 'system'
 
@@ -113,6 +115,7 @@ export interface RunLimits {
 export interface Run {
   id: string
   workspaceId: string
+  accessMode: RunAccessMode
   title: string
   objective: string
   status: RunStatus

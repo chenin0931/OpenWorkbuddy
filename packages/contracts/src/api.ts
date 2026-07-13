@@ -24,6 +24,7 @@ import {
   PageRequestSchema,
   RunDetailSchema,
   RunEventSchema,
+  RunAccessModeSchema,
   RunLimitsSchema,
   RunSchema,
   RunStatusSchema,
@@ -55,6 +56,7 @@ import type {
   Page,
   PageRequest,
   Run,
+  RunAccessMode,
   RunDetail,
   RunEvent,
   RunLimits,
@@ -87,6 +89,7 @@ export interface UpdateWorkspaceInput {
 export interface CreateRunInput {
   workspaceId: string
   objective: string
+  accessMode?: RunAccessMode
   mode?: 'plan' | 'execute'
   title?: string
   modelProfileId?: string
@@ -97,6 +100,7 @@ export interface CreateRunInput {
 export interface SendRunMessageInput {
   runId: string
   content: string
+  accessMode?: RunAccessMode
   attachmentIds?: string[]
 }
 
@@ -437,10 +441,10 @@ export const DesktopInvokeContracts: Record<DesktopInvokeChannel, { input: z.Zod
   'runs:list': { input: PageRequestSchema.extend({ workspaceId: IdSchema.optional(), status: RunStatusSchema.optional() }).strict().optional(), output: PageSchema(RunSummarySchema) },
   'runs:get': { input: ByIdSchema, output: RunDetailSchema },
   'runs:create': {
-    input: z.object({ workspaceId: IdSchema, objective: z.string().min(1), mode: z.enum(['plan', 'execute']).optional(), title: z.string().min(1).optional(), modelProfileId: IdSchema.optional(), attachmentIds: z.array(IdSchema).optional(), limits: RunLimitsSchema.partial().optional() }).strict(),
+    input: z.object({ workspaceId: IdSchema, objective: z.string().min(1), accessMode: RunAccessModeSchema.optional(), mode: z.enum(['plan', 'execute']).optional(), title: z.string().min(1).optional(), modelProfileId: IdSchema.optional(), attachmentIds: z.array(IdSchema).optional(), limits: RunLimitsSchema.partial().optional() }).strict(),
     output: RunDetailSchema,
   },
-  'runs:send-message': { input: z.object({ runId: IdSchema, content: z.string().min(1), attachmentIds: z.array(IdSchema).optional() }).strict(), output: VoidSchema },
+  'runs:send-message': { input: z.object({ runId: IdSchema, content: z.string().min(1), accessMode: RunAccessModeSchema.optional(), attachmentIds: z.array(IdSchema).optional() }).strict(), output: VoidSchema },
   'runs:pause': { input: ByIdSchema, output: RunSchema },
   'runs:resume': { input: ByIdSchema, output: RunSchema },
   'runs:cancel': { input: ByIdSchema, output: RunSchema },

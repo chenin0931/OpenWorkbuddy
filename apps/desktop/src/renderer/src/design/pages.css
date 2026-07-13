@@ -91,18 +91,6 @@
 .setting-row strong { font-size: 12px; }
 .setting-row span { color: var(--text-tertiary); font-size: 11px; }
 .setting-row select, .limit-grid input { height: 32px; padding: 0 9px; background: var(--surface-subtle); border: 1px solid var(--separator); border-radius: var(--radius-control); font-size: 12px; }
-.permission-mode-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; padding: 12px 0; }
-.permission-mode-grid button { display: grid; grid-template-columns: 30px minmax(0, 1fr); align-items: start; min-height: 76px; gap: 9px; padding: 11px; color: var(--text-secondary); background: var(--surface-subtle); border: 1px solid var(--separator); border-radius: var(--radius-surface); text-align: left; }
-.permission-mode-grid button:hover { background: var(--surface-hover); border-color: var(--separator-strong); }
-.permission-mode-grid button.is-active { color: var(--text); background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 65%, var(--separator)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 12%, transparent); }
-.permission-mode-icon { display: grid; place-items: center; width: 30px; height: 30px; color: var(--text-secondary); background: var(--surface); border: 1px solid var(--separator); border-radius: var(--radius-control); }
-.permission-mode-grid button.is-active .permission-mode-icon { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 28%, var(--separator)); }
-.permission-mode-grid button > span:last-child { display: flex; min-width: 0; gap: 5px; flex-direction: column; }
-.permission-mode-grid strong { display: flex; align-items: center; gap: 6px; font-size: 12px; }
-.permission-mode-grid strong em { padding: 2px 5px; color: var(--accent); background: var(--surface); border-radius: var(--radius-floating); font-size: 11px; font-style: normal; font-weight: 650; }
-.permission-mode-grid small { color: var(--text-tertiary); font-size: 11px; line-height: 1.45; }
-.permission-mode-note { display: flex; align-items: flex-start; gap: 6px; margin: 0; padding: 0 0 13px; color: var(--text-tertiary); font-size: 11px; line-height: 1.5; }
-.permission-mode-note svg { flex: 0 0 auto; margin-top: 1px; }
 .chrome-settings { display: flex; align-items: center; min-height: 72px; gap: 12px; }
 .chrome-illustration { display: grid; place-items: center; width: 38px; height: 38px; color: var(--link); background: color-mix(in srgb, var(--link) 12%, transparent); border-radius: var(--radius-surface); }
 .chrome-settings > div:nth-child(2) { display: flex; min-width: 0; flex: 1; gap: 3px; flex-direction: column; }
@@ -115,10 +103,6 @@
 .limit-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; padding: 12px 0; }
 .limit-grid label { display: flex; gap: 5px; color: var(--text-secondary); font-size: 11px; flex-direction: column; }
 .package-preview, .rules-editor { max-height: 240px; padding: 10px; overflow: auto; color: var(--text-secondary); background: var(--surface-subtle); border: 1px solid var(--separator); border-radius: var(--radius-control); font: 11px/1.55 var(--font-mono); white-space: pre-wrap; }
-
-@media (max-width: 680px) {
-  .permission-mode-grid { grid-template-columns: 1fr; }
-}
 
 .security-banner { display: flex; align-items: center; max-width: 1060px; gap: 12px; margin: 0 auto 14px; padding: 14px 16px; }
 .security-banner > span:first-child { display: grid; place-items: center; width: 36px; height: 36px; color: var(--success); background: var(--success-soft); border-radius: var(--radius-surface); }
