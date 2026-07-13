@@ -1,6 +1,7 @@
 import { access, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
@@ -90,5 +91,22 @@ Never loaded.
     await writeFile(outside, 'secret')
     await symlink(outside, join(unsafe, 'leak.txt'))
     await expect(service.import(unsafe)).rejects.toThrow('符号链接')
+  })
+
+  it('imports the bundled data analysis skill with reproducibility constraints', async () => {
+    const bundled = fileURLToPath(new URL('../../resources/skills/data-analysis', import.meta.url))
+    const imported = await service.importDirectory(bundled)
+    const detail = await service.get(imported.id)
+
+    expect(imported).toMatchObject({ name: 'data-analysis', version: '1.0.0' })
+    expect(imported.permissions.map((permission) => permission.capability)).toEqual([
+      'filesystem_read',
+      'filesystem_write',
+      'shell',
+    ])
+    expect(detail.instructions).toContain('attachment_open')
+    expect(detail.instructions).toContain('不得向用户全局 Python 安装依赖')
+    expect(detail.instructions).toContain('留出集或交叉验证')
+    expect(detail.instructions).toContain('output_register')
   })
 })

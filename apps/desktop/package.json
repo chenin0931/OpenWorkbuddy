@@ -106,6 +106,10 @@
       {
         "from": "../../PRIVACY.md",
         "to": "PRIVACY.md"
+      },
+      {
+        "from": "resources/skills",
+        "to": "BundledSkills"
       }
     ],
     "mac": {

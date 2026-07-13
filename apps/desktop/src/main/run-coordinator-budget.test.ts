@@ -43,6 +43,24 @@ async function fixture(): Promise<{
 }
 
 describe('turn-aware run budgets', () => {
+  it('broadcasts live progress while persisting an unchanged progress state at most once per 2.5 seconds', async () => {
+    const { database, coordinator, broadcast } = await fixture()
+    const run = database.createRun({ prompt: 'Long analysis' })
+    database.updateRun(run.id, { status: 'running' })
+
+    for (const generatedChars of [100, 200, 300]) {
+      await coordinator.onHostMessage({
+        type: 'agent.event',
+        runId: run.id,
+        event: { type: 'agent.progress', phase: 'composing_tool', message: '正在准备写入文件…', toolName: 'file_write', generatedChars },
+      })
+    }
+
+    expect(broadcast.mock.calls.filter(([event]) => event.kind === 'progress.updated')).toHaveLength(3)
+    expect(database.getRun(run.id)?.events.filter((event: any) => event.type === 'progress.updated')).toHaveLength(1)
+    database.close()
+  })
+
   it('uses an explicit subagent model default and otherwise inherits the parent snapshot', async () => {
     const { database, coordinator } = await fixture()
     const parentProfileId = database.saveModelProfile({ name: 'Parent', provider: 'openai', modelId: 'parent-model' })

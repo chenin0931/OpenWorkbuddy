@@ -16,6 +16,7 @@ class FakeDatabase {
   granted = true
   approvals: any[] = []
   skills = new Map<string, any>()
+  events: any[] = []
   workspaceRoot = '/workspace'
   private nextToolReceipt = 0
   currentTurnStartedAt: string | undefined
@@ -35,6 +36,7 @@ class FakeDatabase {
   getSetting = <T>(key: string, fallback: T): T => (this.settings[key] ?? fallback) as T
   hasRunGrant = () => this.granted
   audit = () => undefined
+  appendRunEvent = (runId: string, type: string, summary: string, payload: unknown) => this.events.push({ runId, type, summary, payload })
   listArtifacts = () => this.artifactRows
   updateRun = (_id: string, patch: Record<string, unknown>) => Object.assign(this.run, patch)
   transitionRun = (_id: string, status: string, patch: Record<string, unknown> = {}) => Object.assign(this.run, patch, { status })
@@ -63,7 +65,7 @@ class FakeDatabase {
   }
 }
 
-function brokerFixture(database = new FakeDatabase(), execute?: (input: any) => Promise<any>) {
+function brokerFixture(database = new FakeDatabase(), execute?: (input: any, onProgress?: (progress: any) => void) => Promise<any>) {
   const stored: any[] = []
   const events: any[] = []
   const runner = { execute: execute ?? (async () => ({})) }
@@ -166,6 +168,20 @@ describe('ToolBroker completion gate', () => {
 })
 
 describe('ToolBroker file leases and artifacts', () => {
+  it('persists runner progress at most once per 2.5 seconds for one tool request', async () => {
+    const database = new FakeDatabase()
+    const fixture = brokerFixture(database, async (_input, onProgress) => {
+      onProgress?.({ channel: 'stdout', text: 'one' })
+      onProgress?.({ channel: 'stdout', text: 'two' })
+      onProgress?.({ channel: 'stdout', text: 'three' })
+      return { entries: [] }
+    })
+
+    await fixture.broker.handle({ runId: 'run-1', requestId: 'list-progress', toolCallId: 'list-progress', toolId: 'file_list', args: { path: '.' } })
+
+    expect(database.events.filter((event) => event.type === 'tool.progress')).toHaveLength(1)
+  })
+
   it('opens only attachments belonging to the current run without scanning by filename', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'openworkbuddy-attachment-'))
     const path = join(directory, 'dataset.csv')

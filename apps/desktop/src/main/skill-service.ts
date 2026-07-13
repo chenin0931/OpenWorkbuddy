@@ -154,8 +154,12 @@ const parseSkillFile = async (directory: string): Promise<ParsedSkill> => {
   if (!description) throw new Error('Skill description 不能为空')
   if (description.length > 1_024) throw new Error('Skill description 不能超过 1024 个字符')
 
-  const version = typeof metadata.version === 'string' && metadata.version.trim()
-    ? metadata.version.trim()
+  const skillMetadata = isRecord(metadata.metadata) && isRecord(metadata.metadata.openworkbuddy)
+    ? metadata.metadata.openworkbuddy
+    : {}
+  const configuredVersion = metadata.version ?? skillMetadata.version
+  const version = typeof configuredVersion === 'string' && configuredVersion.trim()
+    ? configuredVersion.trim()
     : '1.0.0'
   if (version.length > 64) throw new Error('Skill version 不能超过 64 个字符')
 
@@ -163,7 +167,7 @@ const parseSkillFile = async (directory: string): Promise<ParsedSkill> => {
     name,
     description,
     version,
-    permissions: parsePermissions(metadata.permissions),
+    permissions: parsePermissions(metadata.permissions ?? skillMetadata.permissions),
     instructions,
   }
 }

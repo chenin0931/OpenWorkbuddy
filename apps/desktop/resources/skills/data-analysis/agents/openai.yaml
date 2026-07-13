@@ -1,0 +1,4 @@
+interface:
+  display_name: "数据分析"
+  short_description: "从附件数据生成可复现、经过验证并可直接交付的分析产物"
+  default_prompt: "Use $data-analysis to inspect the attached dataset and produce a reproducible, validated analysis report."

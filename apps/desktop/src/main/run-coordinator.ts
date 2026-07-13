@@ -33,6 +33,8 @@ export class RunCoordinator {
   private sequences = new Map<string, number>()
   private streamingMessageIds = new Map<string, string>()
   private completionWaiters = new Map<string, Array<(run: any) => void>>()
+  private lastPersistedProgressAt = new Map<string, number>()
+  private lastPersistedProgressSignature = new Map<string, string>()
 
   constructor(
     private database: AppDatabase,
@@ -265,6 +267,7 @@ export class RunCoordinator {
     this.database.transitionRun(runId, 'paused', { outcome: null, finishedAt: null })
     this.database.cancelPendingRunWork(runId, '任务已暂停；未完成工具和审批已失效')
     this.broker.rejectRunApprovals(runId, '任务已暂停；审批已失效')
+    this.clearTransientEventState(runId)
     this.emitRun(runId)
     return this.getRun(runId)
   }
@@ -287,6 +290,7 @@ export class RunCoordinator {
     this.database.transitionRun(runId, 'cancelled', { outcome: null, error: null, finishedAt: new Date().toISOString() })
     this.database.cancelPendingRunWork(runId, '任务已取消')
     this.broker.rejectRunApprovals(runId)
+    this.clearTransientEventState(runId)
     this.emitRun(runId)
     const cancelled = this.getRun(runId)
     for (const resolve of this.completionWaiters.get(runId) ?? []) resolve(cancelled)
@@ -357,7 +361,7 @@ export class RunCoordinator {
     if (IGNORE_LATE_AGENT_EVENT_STATUSES.has(current.status)) return
     if (event.type === 'agent.progress') {
       const at = new Date().toISOString()
-      this.emit({
+      const progressEvent: RunEvent = {
         id: randomUUID(),
         runId,
         sequence: this.nextSequence(runId),
@@ -370,7 +374,18 @@ export class RunCoordinator {
           ...(Number.isInteger(event.generatedChars) && event.generatedChars >= 0 ? { generatedChars: event.generatedChars } : {}),
           updatedAt: at,
         },
-      })
+      }
+      const signature = JSON.stringify([event.phase, event.message, event.toolName ?? ''])
+      const now = Date.now()
+      const shouldPersist = signature !== this.lastPersistedProgressSignature.get(runId)
+        || now - (this.lastPersistedProgressAt.get(runId) ?? 0) >= 2_500
+      if (shouldPersist) {
+        this.lastPersistedProgressAt.set(runId, now)
+        this.lastPersistedProgressSignature.set(runId, signature)
+        this.emit(progressEvent)
+      } else {
+        this.broadcast(progressEvent)
+      }
       return
     }
     if (event.type === 'agent.started') {
@@ -431,6 +446,7 @@ export class RunCoordinator {
         })
       }
       this.emitRun(runId)
+      this.clearTransientEventState(runId)
       const finished = this.getRun(runId)
       this.notify(failed ? '任务失败' : '任务完成', finished.title)
       for (const resolve of this.completionWaiters.get(runId) ?? []) resolve(finished)
@@ -443,6 +459,7 @@ export class RunCoordinator {
       this.database.finishRunTurn(runId, 'failed')
       this.database.transitionRun(runId, 'failed', { outcome: null, error: event.error, finishedAt: new Date().toISOString() })
       this.emitRun(runId)
+      this.clearTransientEventState(runId)
       const failed = this.getRun(runId)
       this.notify('任务失败', failed.title)
       for (const resolve of this.completionWaiters.get(runId) ?? []) resolve(failed)
@@ -471,6 +488,7 @@ export class RunCoordinator {
       turnUsage: turnUsageBeforeFinish,
     }, 'warning')
     this.emitRun(runId)
+    this.clearTransientEventState(runId)
     const waiting = this.getRun(runId)
     this.notify('任务需要继续', waiting.title)
     for (const resolve of this.completionWaiters.get(runId) ?? []) resolve(waiting)
@@ -740,6 +758,7 @@ export class RunCoordinator {
       this.host.cancelRun(runId)
       this.runner.cancelRun(runId)
       this.streamingMessageIds.delete(runId)
+      this.clearTransientEventState(runId)
       this.emitRun(runId)
     }
     if (paused.runIds.length) this.notify('Chrome 已断开', `${paused.runIds.length} 个使用 Chrome 的任务已等待重新连接。`)
@@ -751,6 +770,7 @@ export class RunCoordinator {
     for (const runId of recovery.runIds) {
       this.broker.rejectRunApprovals(runId, '执行进程意外退出，审批已失效')
       this.streamingMessageIds.delete(runId)
+      this.clearTransientEventState(runId)
       this.emitRun(runId)
     }
     if (recovery.pausedRuns) this.notify('任务已暂停', `${workerName} 意外退出；${recovery.pausedRuns} 个任务可在重启执行进程后继续。`)
@@ -810,6 +830,11 @@ export class RunCoordinator {
   private emitRun(runId: string): void {
     const run = this.getRun(runId)
     this.emit({ id: randomUUID(), runId, sequence: this.nextSequence(runId), at: new Date().toISOString(), kind: 'run.updated', run })
+  }
+  private clearTransientEventState(runId: string): void {
+    this.streamingMessageIds.delete(runId)
+    this.lastPersistedProgressAt.delete(runId)
+    this.lastPersistedProgressSignature.delete(runId)
   }
   private nextSequence(runId: string): number { const next = (this.sequences.get(runId) ?? 0) + 1; this.sequences.set(runId, next); return next }
   private eventSummary(event: RunEvent): string { return event.kind === 'error' ? event.error.message : event.kind.replace('.', ' ') }

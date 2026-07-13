@@ -152,6 +152,7 @@ export class ToolBroker {
   private pendingApprovals = new Map<string, PendingApproval>()
   private fileLeaseTails = new Map<string, Promise<void>>()
   private fileDrafts = new Map<string, { runId: string; path: string; content: string; expectedSha256?: string }>()
+  private lastToolProgressAt = new Map<string, number>()
 
   constructor(
     private database: AppDatabase,
@@ -262,6 +263,7 @@ export class ToolBroker {
       this.emitTool(input.runId, { ...receiptCall, error: { code: (error as any)?.code ?? 'TOOL_FAILED', message: safeMessage, retryable: decision.idempotent } }, 'failed', decision.riskLevel)
       throw error
     } finally {
+      this.lastToolProgressAt.delete(input.requestId)
       releaseLease()
     }
   }
@@ -510,6 +512,9 @@ export class ToolBroker {
       mcpServer = { id: raw.id, transport: raw.transport, config: raw.config, ...(secrets ? { secrets } : {}) }
     }
     const result = await this.runner.execute({ runId, requestId, toolId: tool.runnerId, args, workspacePath: workspace.root_path, authorizedRoot, ...(mcpServer ? { mcpServer } : {}) }, (progress) => {
+      const now = Date.now()
+      if (now - (this.lastToolProgressAt.get(requestId) ?? 0) < 2_500) return
+      this.lastToolProgressAt.set(requestId, now)
       this.database.appendRunEvent(runId, 'tool.progress', `${tool.label}: ${String(progress.text).slice(-500)}`, { channel: progress.channel })
     })
     return this.captureArtifacts(runId, tool, result, preMutationSnapshot)

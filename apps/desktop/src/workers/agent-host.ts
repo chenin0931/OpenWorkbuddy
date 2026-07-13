@@ -16,6 +16,7 @@ import {
   type RuntimeProviderName,
 } from './agent-host-runtime'
 import { compactMessagesWithCheckpoint } from './context-checkpoint'
+import { TextDeltaBuffer } from './event-buffer'
 
 type ProviderName = RuntimeProviderName
 
@@ -227,7 +228,7 @@ async function startRun(command: StartCommand): Promise<void> {
   const toolLabel = (toolName?: string): string => command.tools.find((tool) => tool.id === toolName)?.label ?? toolName ?? '下一步操作'
   const publishProgress = (phase: 'thinking' | 'composing_tool', message: string, details: { toolName?: string; generatedChars?: number } = {}, force = false): void => {
     const timestamp = Date.now()
-    if (!force && timestamp - lastProgressAt < 900) return
+    if (!force && timestamp - lastProgressAt < 1_500) return
     lastProgressAt = timestamp
     send({ type: 'agent.event', runId: command.runId, event: { type: 'agent.progress', phase, message, ...details } })
   }
@@ -244,6 +245,9 @@ async function startRun(command: StartCommand): Promise<void> {
         timestamp: message.timestamp ?? Date.now(),
         ...(message.sourceRef ? { sourceRef: message.sourceRef } : {}),
       } as AgentMessage)
+  const textBuffer = new TextDeltaBuffer((delta) => {
+    send({ type: 'agent.event', runId: command.runId, event: { type: 'text.delta', delta } })
+  })
   const agent = new Agent({
     initialState: {
       systemPrompt: `${command.systemPrompt}${capabilityCatalog}`,
@@ -339,7 +343,7 @@ async function startRun(command: StartCommand): Promise<void> {
       const update = event.assistantMessageEvent
       if (update.type === 'text_delta') {
         lastProgressAt = Date.now()
-        send({ type: 'agent.event', runId: command.runId, event: { type: 'text.delta', delta: update.delta } })
+        textBuffer.push(update.delta)
         return
       }
       if (update.type === 'thinking_start') {
@@ -376,6 +380,7 @@ async function startRun(command: StartCommand): Promise<void> {
     if (event.type === 'message_end') {
       const message: any = event.message
       if (message.role === 'assistant') {
+        textBuffer.flush()
         const content = textFromMessage(message)
         const errorMessage = message.errorMessage
           ? toPublicProviderError(message.errorMessage, [command.apiKey]).message
@@ -418,6 +423,7 @@ async function startRun(command: StartCommand): Promise<void> {
       send({ type: 'agent.event', runId: command.runId, event: { type: 'agent.failed', error: publicError.message } })
     }
   } finally {
+    textBuffer.dispose()
     clearTimeout(timeout)
     clearInterval(heartbeat)
     timers.delete(command.runId)

@@ -161,6 +161,19 @@ async function initialize(): Promise<void> {
   app.on('child-process-gone', workerFailureHandler)
   const skills = new SkillService(database, join(userData, 'skills'))
   await skills.scan()
+  const bundledDataAnalysisSkill = app.isPackaged
+    ? join(process.resourcesPath, 'BundledSkills', 'data-analysis')
+    : join(app.getAppPath(), 'resources', 'skills', 'data-analysis')
+  if (!(await skills.list()).some((skill) => skill.name === 'data-analysis')) {
+    try {
+      await skills.importDirectory(bundledDataAnalysisSkill)
+    } catch (error) {
+      database.audit('skill', 'install_bundled', '内置数据分析 Skill 安装失败', {
+        actor: 'system', outcome: 'failed', target: bundledDataAnalysisSkill,
+        error: error instanceof Error ? error.message : String(error),
+      })
+    }
+  }
   const automations = new AutomationService(database, (request) => coordinator.create({ workspaceId: request.workspaceId, objective: request.objective, title: request.title, modelProfileId: request.modelProfileId }), {
     onError: (error, automation) => notify('自动化执行失败', `${automation.name}: ${error instanceof Error ? error.message : String(error)}`),
   })
