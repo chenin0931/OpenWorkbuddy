@@ -14,6 +14,8 @@ Keep the following in OpenWorkbuddy's own Electron main-process Harness:
 - SQLite state, audit, Memory admission and automation scheduling;
 - MCP configuration/OAuth, Chrome tab grants and Native Messaging;
 - completion gates, crash recovery and user notifications.
+- ordered context preparation, request-integrity repair and durable Tool Receipts;
+- hierarchical Trace, chained audit, document rendering and managed processes.
 
 Pi runs in an Electron `utilityProcess`. It receives only the tools selected for a run and cannot access the Renderer or the Keychain directly. Tool requests must return through the main-process Broker before the independent Tool Runner receives them.
 
@@ -29,5 +31,8 @@ Pi deliberately does not provide a complete desktop permission system. Treating 
 - A future loop replacement is possible behind the versioned Agent Host IPC contract.
 - Pi and the Harness must be evaluated together whenever the model/provider or loop package changes.
 - Pi upgrades require contract, cancellation, tool-result and retry regression tests before release.
+- Provider requests are normalized by OpenWorkbuddy's `ModelRequestPipeline`
+  before Pi's provider adapter sends them; Pi does not decide whether a missing
+  receipt is safe to replay.
 
 References: [Pi repository](https://github.com/earendil-works/pi), [Pi package migration announcement](https://pi.dev/news/2026/5/7/pi-has-a-new-home).

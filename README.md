@@ -33,11 +33,16 @@ boundaries rather than a chat wrapper.
   does not create a broad global default. External, destructive and irreversible
   actions stay behind approval in either mode.
 - Shell execution with a strict read-only allowlist and deterministic risk policy.
+- Cursor-based managed processes for long-running commands, with timeout,
+  cancellation, crash interruption and Artifact-backed logs.
 - Web Search and safe Web Fetch with redirect, address and response-size checks.
 - MCP stdio and Streamable HTTP, encrypted secrets and OAuth PKCE.
 - Progressive Skill loading, confirmed Memory and local capability packages.
 - Chrome Manifest V3 bridge with explicit task-scoped tab binding.
 - Local sub-agents, schedules, crash recovery, audit export and macOS notifications.
+- Ordered Context Pipeline, provider-neutral tool-receipt integrity checks,
+  hierarchical Trace and SHA-256-chained audit entries.
+- Sandboxed Markdown-to-PDF export with automatic output registration.
 - Quiet Workbench UI with grouped work turns, collapsed activity and a persistent
   artifact shelf for outputs, screenshots and file changes.
 

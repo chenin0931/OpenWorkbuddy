@@ -29,6 +29,8 @@ function detail(overrides: Partial<RunDetailView> = {}): RunDetailView {
     artifacts: [],
     diffs: [],
     context: [],
+    traces: [],
+    traceSpans: [],
     ...overrides,
   }
 }

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { bridge } from '../../bridge'
 import { Icon, type IconName } from '../../icons'
-import type { JsonRecord, RunDetailView, SourceItem, WorkbenchSnapshot } from '../../types'
+import type { JsonRecord, RunDetailView, SourceItem, TraceSpanItem, WorkbenchSnapshot } from '../../types'
 import { EmptyState, Modal, Tabs } from '../../ui'
 import { PanelResizer, usePersistentPanelWidth } from '../shell/panel-resizer'
 
@@ -19,7 +19,7 @@ interface WorkInspectorProps {
 
 const TOOL_LABELS: Record<string, string> = {
   web_search: '搜索网页', web_fetch: '读取网页', file_list: '浏览文件', file_read: '读取文件', file_search: '搜索工作区', attachment_open: '打开附件', output_register: '登记产物',
-  file_write: '写入文件', file_replace: '修改文件', file_delete: '移入废纸篓', shell_run: '运行命令', task_plan: '整理计划',
+  file_write: '写入文件', file_replace: '修改文件', file_delete: '移入废纸篓', shell_run: '运行命令', process_start: '启动后台进程', process_poll: '读取后台进程', process_stop: '停止后台进程', document_render: '导出 PDF', task_plan: '整理计划',
   task_step_update: '更新步骤', task_complete: '完成检查', skill_read: '读取技能', memory_propose: '提出记忆', agent_delegate: '并行处理',
   chrome_snapshot: '读取网页', chrome_screenshot: '网页截图', chrome_navigate: '打开网页', chrome_click: '点击网页', chrome_type: '网页输入',
   mcp_list_tools: '发现连接能力', mcp_call_tool: '使用连接',
@@ -42,6 +42,13 @@ function formatBytes(value?: number): string {
   if (value < 1024) return `${value} B`
   if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`
   return `${(value / 1024 / 1024).toFixed(1)} MB`
+}
+
+function formatDuration(value?: number): string {
+  if (value === undefined) return ''
+  if (value < 1_000) return `${Math.max(0, Math.round(value))} ms`
+  if (value < 60_000) return `${(value / 1_000).toFixed(value < 10_000 ? 1 : 0)} s`
+  return `${Math.floor(value / 60_000)}m ${Math.round((value % 60_000) / 1_000)}s`
 }
 
 function sourceHost(url: string): string {
@@ -108,20 +115,72 @@ function DetailsPanel({ detail, snapshot, onBindChrome, onOpenSettings }: Pick<W
       <div className="context-list">
         {workspace && <div><span className="context-icon"><Icon name="folder" size={14} /></span><span><strong>{workspace.name}</strong><small>{shortPath(workspace.path)}</small></span></div>}
         {model && <div><span className="context-icon"><Icon name="layers" size={14} /></span><span><strong>{model.name}</strong><small>{model.modelId}</small></span></div>}
-        <div><span className="context-icon trusted"><Icon name="shield" size={14} /></span><span><strong>执行权限</strong><small>{detail.accessMode === 'full_disk' ? '完全访问整个磁盘 · 工具自动执行' : '工作区内操作按需批准'}</small></span></div>
+        <div><span className="context-icon trusted"><Icon name="shield" size={14} /></span><span><strong>执行权限</strong><small>{detail.accessMode === 'full_disk' ? '完全访问 · 普通操作自动，高风险仍确认' : '工作区内操作按需批准'}</small></span></div>
       </div>
     </details>
   </>
 }
 
+const TRACE_KIND_LABELS: Record<TraceSpanItem['kind'], string> = {
+  run_turn: '任务轮次', context_stage: '准备上下文', model_turn: '模型生成', tool_call: '执行工具', approval_wait: '等待确认', checkpoint: '压缩上下文', verification: '验证结果', managed_process: '后台进程',
+}
+
+const TRACE_STATUS_LABELS: Record<TraceSpanItem['status'], string> = {
+  running: '进行中', waiting: '等待中', succeeded: '已完成', failed: '失败', cancelled: '已取消', interrupted: '已中断',
+}
+
+export function latestTraceSpans(detail: Pick<RunDetailView, 'traces' | 'traceSpans'>): TraceSpanItem[] {
+  const latest = [...detail.traces].sort((left, right) => right.startedAt.localeCompare(left.startedAt))[0]
+  if (!latest) return []
+  return detail.traceSpans.filter((span) => span.traceId === latest.id)
+}
+
+export function traceDiagnosticHeadline(spans: TraceSpanItem[]): string {
+  const active = [...spans].reverse().find((span) => span.status === 'waiting' || span.status === 'running')
+  if (active) return `${TRACE_KIND_LABELS[active.kind]} · ${active.name}`
+  const failed = [...spans].reverse().find((span) => span.status === 'failed' || span.status === 'interrupted')
+  if (failed) return `${TRACE_KIND_LABELS[failed.kind]}${failed.status === 'interrupted' ? '中断' : '失败'} · ${failed.name}`
+  const totalDuration = spans.find((span) => span.kind === 'run_turn')?.durationMs
+  return `${spans.length} 个阶段${totalDuration !== undefined ? ` · ${formatDuration(totalDuration)}` : ''}`
+}
+
+function traceDetails(span: TraceSpanItem): string {
+  const payload = {
+    ...(Object.keys(span.attributes).length ? { attributes: span.attributes } : {}),
+    ...(span.usage && Object.keys(span.usage).length ? { usage: span.usage } : {}),
+    ...(span.error && Object.keys(span.error).length ? { error: span.error } : {}),
+    ...(span.artifactIds.length ? { artifactIds: span.artifactIds } : {}),
+  }
+  return Object.keys(payload).length ? JSON.stringify(payload, null, 2) : ''
+}
+
+function TraceDiagnostics({ detail }: { detail: RunDetailView }) {
+  const spans = latestTraceSpans(detail)
+  if (!spans.length) return null
+  return <Section title="阶段诊断" icon="activity">
+    <details className="trace-diagnostics">
+      <summary><span className="trace-status-dot" data-status={spans.some((span) => span.status === 'running' || span.status === 'waiting') ? 'running' : spans.some((span) => span.status === 'failed' || span.status === 'interrupted') ? 'failed' : 'succeeded'} /><span><strong>{traceDiagnosticHeadline(spans)}</strong><small>展开查看耗时、token 和错误回执；不包含隐藏思维链</small></span><Icon name="chevronDown" size={14} /></summary>
+      <div className="trace-span-list">{spans.map((span) => {
+        const technical = traceDetails(span)
+        return <div key={span.id} className={`trace-span trace-${span.status}`}>
+          <span className="trace-status-dot" data-status={span.status} />
+          <span><strong>{TRACE_KIND_LABELS[span.kind]}</strong><small>{span.name}</small>{technical && <details className="diagnostic-details"><summary>技术详情</summary><pre>{technical}</pre></details>}</span>
+          <span><em>{TRACE_STATUS_LABELS[span.status]}</em><time>{formatDuration(span.durationMs) || formatTime(span.startedAt)}</time></span>
+        </div>
+      })}</div>
+    </details>
+  </Section>
+}
+
 function ActivityPanel({ detail }: { detail: RunDetailView }) {
-  if (!detail.steps.length && !detail.toolCalls.length && !detail.approvalHistory.length) {
+  if (!detail.steps.length && !detail.toolCalls.length && !detail.approvalHistory.length && !detail.traceSpans.length) {
     return <EmptyState compact icon="activity" title="还没有活动" description="读取、命令、网页操作和确认记录会显示在这里。" />
   }
   return <>
     {detail.steps.length > 0 && <Section title="步骤" icon="tasks"><div className="plan-list">{detail.steps.map((step, index) => <div key={step.id} className={`plan-step step-${step.status}`}><span>{step.status === 'completed' ? <Icon name="check" size={14} /> : step.status === 'failed' ? <Icon name="warning" size={14} /> : index + 1}</span><div><strong>{step.title}</strong>{step.detail && <small>{step.detail}</small>}</div></div>)}</div></Section>}
     {detail.toolCalls.length > 0 && <Section title="执行记录" icon="terminal"><div className="inspector-activity-list">{detail.toolCalls.map((tool) => <div key={tool.id} className={`tool-status-${tool.status}`}><span className="tool-status-dot" /><span><strong>{tool.title ?? TOOL_LABELS[tool.toolName] ?? tool.toolName.replaceAll('_', ' ')}</strong><small>{tool.error ?? tool.summary ?? (tool.status === 'succeeded' ? '已完成' : tool.status === 'failed' ? '没有完成' : '正在处理')}</small></span><time>{formatTime(tool.updatedAt ?? tool.createdAt)}</time></div>)}</div></Section>}
     {detail.approvalHistory.length > 0 && <Section title="确认记录" icon="shield"><div className="inspector-activity-list">{detail.approvalHistory.map((approval) => <div key={approval.id} className={`approval-${approval.status}`}><Icon name={approval.status === 'approved' || approval.status === 'edited' ? 'check' : approval.status === 'rejected' ? 'warning' : 'clock'} size={14} /><span><strong>{approval.title}</strong><small>{approval.status === 'approved' ? '已允许' : approval.status === 'edited' ? '修改后允许' : approval.status === 'rejected' ? '已拒绝' : '需要确认'}</small></span><time>{formatTime(approval.resolvedAt ?? approval.createdAt)}</time></div>)}</div></Section>}
+    <TraceDiagnostics detail={detail} />
   </>
 }
 
@@ -162,7 +221,7 @@ export function WorkInspector(props: WorkInspectorProps) {
   const available = useMemo(() => ({
     details: true,
     changes: detail.diffs.length > 0 || outputs.length > 0,
-    activity: detail.steps.length > 0 || detail.toolCalls.length > 0 || detail.approvalHistory.length > 0,
+    activity: detail.steps.length > 0 || detail.toolCalls.length > 0 || detail.approvalHistory.length > 0 || detail.traceSpans.length > 0,
   }), [detail, outputs.length])
 
   useEffect(() => { setTab(available[requestedTab] ? requestedTab : 'details') }, [available, requestedTab])

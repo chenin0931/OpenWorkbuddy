@@ -18,7 +18,9 @@ import { migrateLegacyBrandDirectory } from './brand-migration'
 import { DocumentRenderService } from './document-render-service'
 
 app.setName('OpenWorkbuddy')
-const hasLock = app.requestSingleInstanceLock()
+// Isolated Electron smoke tests use their own temporary userData while the
+// installed client may remain open. Production instances still share one lock.
+const hasLock = process.env.NODE_ENV === 'test' || app.requestSingleInstanceLock()
 if (!hasLock) app.quit()
 
 let mainWindow: BrowserWindow | undefined

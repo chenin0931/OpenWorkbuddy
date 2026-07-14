@@ -1,13 +1,16 @@
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { access, mkdtemp, rm } from 'node:fs/promises'
+import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import process from 'node:process'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import { createModels, InMemoryCredentialStore } from '@earendil-works/pi-ai'
 import { moonshotaiCnProvider } from '@earendil-works/pi-ai/providers/moonshotai-cn'
 
 const PROVIDER = 'moonshotai-cn'
 const MODEL_ID = 'kimi-k2.7-code'
+const execFileAsync = promisify(execFile)
 
 async function readSecret() {
   if (!process.stdin.isTTY || typeof process.stdin.setRawMode !== 'function') {
@@ -40,8 +43,10 @@ async function readSecret() {
 }
 
 function redact(message, secret) {
-  return String(message ?? 'Kimi 在线测试失败')
-    .replaceAll(secret, '[REDACTED]')
+  const redacted = secret
+    ? String(message ?? 'Kimi 在线测试失败').replaceAll(secret, '[REDACTED]')
+    : String(message ?? 'Kimi 在线测试失败')
+  return redacted
     .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, '[REDACTED]')
     .replace(/(authorization\s*[:=]\s*bearer\s+)[^\s,;"']+/gi, '$1[REDACTED]')
 }
@@ -53,10 +58,24 @@ function textOf(message) {
     .join('')
 }
 
+async function firstWindowWithDiagnostics(application) {
+  const diagnostics = []
+  application.process().stderr?.on('data', (chunk) => {
+    if (diagnostics.join('').length < 8_000) diagnostics.push(String(chunk))
+  })
+  try {
+    return await application.firstWindow()
+  } catch (error) {
+    const detail = diagnostics.join('').trim().slice(-4_000)
+    throw new Error(`${error instanceof Error ? error.message : String(error)}${detail ? `\nElectron stderr:\n${detail}` : ''}`)
+  }
+}
+
 async function appConnectionSmoke(secret) {
   const { _electron: electron } = await import('@playwright/test')
   const desktopRoot = resolve(process.cwd())
-  const userData = await mkdtemp(join(tmpdir(), 'workbuddy-kimi-app-smoke-'))
+  // Keep this path short enough for the app's Unix-domain Chrome socket.
+  const userData = await mkdtemp(join('/tmp', 'owb-kimi-app-'))
   let application
   try {
     application = await electron.launch({
@@ -64,7 +83,7 @@ async function appConnectionSmoke(secret) {
       args: ['dist/main/index.cjs', `--user-data-dir=${userData}`],
       env: { ...process.env, NODE_ENV: 'test' },
     })
-    const window = await application.firstWindow()
+    const window = await firstWindowWithDiagnostics(application)
     const result = await window.evaluate(async ({ apiKey, provider, modelId }) => {
       const api = globalThis.workbuddy
       if (!api) throw new Error('preload API 不可用')
@@ -84,65 +103,114 @@ async function appConnectionSmoke(secret) {
   }
 }
 
+async function existingProfileSmoke() {
+  const { _electron: electron } = await import('@playwright/test')
+  const desktopRoot = resolve(process.cwd())
+  const sourceDatabase = join(homedir(), 'Library', 'Application Support', 'OpenWorkbuddy', 'workbuddy.sqlite3')
+  // Keep this path short enough for the app's Unix-domain Chrome socket.
+  const userData = await mkdtemp(join('/tmp', 'owb-kimi-profile-'))
+  const copiedDatabase = join(userData, 'workbuddy.sqlite3')
+  let application
+  try {
+    // SQLite's online backup produces a consistent snapshot even when the
+    // installed app is open. The encrypted key never leaves the database and
+    // is decrypted only inside Electron safeStorage under the same macOS user.
+    await execFileAsync('/usr/bin/sqlite3', [sourceDatabase, `.backup ${copiedDatabase}`])
+    const packaged = process.argv.includes('--packaged')
+    const executablePath = resolve(desktopRoot, '../../outputs/release/mac/OpenWorkbuddy.app/Contents/MacOS/OpenWorkbuddy')
+    if (packaged) await access(executablePath)
+    application = await electron.launch(packaged ? {
+      executablePath,
+      args: [`--user-data-dir=${userData}`],
+      env: { ...process.env, NODE_ENV: 'test' },
+    } : {
+      cwd: desktopRoot,
+      args: ['dist/main/index.cjs', `--user-data-dir=${userData}`],
+      env: { ...process.env, NODE_ENV: 'test' },
+    })
+    const window = await firstWindowWithDiagnostics(application)
+    const result = await window.evaluate(async ({ provider, modelId }) => {
+      const api = globalThis.workbuddy
+      if (!api) throw new Error('preload API 不可用')
+      const profiles = await api.models.list()
+      const profile = profiles.find((candidate) => candidate.provider === provider && candidate.modelId === modelId && candidate.keyConfigured)
+        ?? profiles.find((candidate) => candidate.provider === provider && candidate.keyConfigured)
+      if (!profile) throw new Error('本机 OpenWorkbuddy 数据中没有已配置 Key 的 Kimi Profile')
+      const tested = await api.models.test({ profileId: profile.id })
+      if (!tested?.ok) throw new Error(tested?.error?.message ?? '应用内连接测试失败')
+      return { ok: true, provider: tested.provider, model: tested.modelId, latencyMs: tested.latencyMs }
+    }, { provider: PROVIDER, modelId: MODEL_ID })
+    process.stdout.write(`${JSON.stringify({ ok: true, mode: packaged ? 'packaged-existing-profile' : 'existing-profile', ...result })}\n`)
+  } finally {
+    await application?.close().catch(() => undefined)
+    await rm(userData, { recursive: true, force: true })
+  }
+}
+
 let apiKey = ''
 try {
-  apiKey = await readSecret()
-  if (!apiKey) throw new Error('API Key 不能为空')
+  if (process.argv.includes('--existing-profile')) {
+    await existingProfileSmoke()
+    process.exitCode = 0
+  } else {
+    apiKey = await readSecret()
+    if (!apiKey) throw new Error('API Key 不能为空')
 
-  const credentials = new InMemoryCredentialStore()
-  await credentials.modify(PROVIDER, async () => ({ type: 'api_key', key: apiKey }))
-  const models = createModels({ credentials, authContext: { env: async () => undefined, fileExists: async () => false } })
-  models.setProvider(moonshotaiCnProvider())
-  const catalogModel = models.getModel(PROVIDER, MODEL_ID)
-  if (!catalogModel) throw new Error(`Pi 模型目录中没有 ${MODEL_ID}`)
+    const credentials = new InMemoryCredentialStore()
+    await credentials.modify(PROVIDER, async () => ({ type: 'api_key', key: apiKey }))
+    const models = createModels({ credentials, authContext: { env: async () => undefined, fileExists: async () => false } })
+    models.setProvider(moonshotaiCnProvider())
+    const catalogModel = models.getModel(PROVIDER, MODEL_ID)
+    if (!catalogModel) throw new Error(`Pi 模型目录中没有 ${MODEL_ID}`)
 
-  // Keep the smoke test bounded even if a future Pi catalog advertises a larger output cap.
-  const model = { ...catalogModel, contextWindow: 262_144, maxTokens: 8_192 }
-  const nonce = `workbuddy-${randomUUID()}`
-  const tool = {
-    name: 'echo_nonce',
-    description: 'Return the nonce supplied by the user. Use this tool exactly once for the smoke test.',
-    parameters: {
-      type: 'object',
-      properties: { nonce: { type: 'string' } },
-      required: ['nonce'],
-      additionalProperties: false,
-    },
+    // Keep the smoke test bounded even if a future Pi catalog advertises a larger output cap.
+    const model = { ...catalogModel, contextWindow: 262_144, maxTokens: 8_192 }
+    const nonce = `workbuddy-${randomUUID()}`
+    const tool = {
+      name: 'echo_nonce',
+      description: 'Return the nonce supplied by the user. Use this tool exactly once for the smoke test.',
+      parameters: {
+        type: 'object',
+        properties: { nonce: { type: 'string' } },
+        required: ['nonce'],
+        additionalProperties: false,
+      },
+    }
+    const messages = [{
+      role: 'user',
+      content: `这是连接与工具调用测试。必须调用 echo_nonce，nonce 必须精确填写为 ${nonce}。拿到工具结果后只输出该 nonce。`,
+      timestamp: Date.now(),
+    }]
+    const options = { maxTokens: 8_192, reasoning: 'medium', maxRetries: 0, timeoutMs: 120_000, sessionId: `smoke-${randomUUID()}` }
+    const started = Date.now()
+    const first = await models.completeSimple(model, { systemPrompt: 'You are a deterministic connection-test agent. Follow the tool instruction exactly.', messages, tools: [tool] }, options)
+    if (first.stopReason === 'error' || first.stopReason === 'aborted') throw new Error(first.errorMessage ?? '首次模型请求失败')
+    const call = first.content.find((part) => part.type === 'toolCall' && part.name === 'echo_nonce')
+    if (!call) throw new Error(`模型没有调用 echo_nonce（stopReason=${first.stopReason}）`)
+    if (call.arguments?.nonce !== nonce) throw new Error('模型生成的工具参数与测试 nonce 不一致')
+
+    messages.push(first)
+    messages.push({
+      role: 'toolResult',
+      toolCallId: call.id,
+      toolName: call.name,
+      content: [{ type: 'text', text: nonce }],
+      details: { verified: true },
+      isError: false,
+      timestamp: Date.now(),
+    })
+    const second = await models.completeSimple(model, { systemPrompt: 'You are a deterministic connection-test agent. Follow the tool instruction exactly.', messages, tools: [tool] }, options)
+    if (second.stopReason === 'error' || second.stopReason === 'aborted') throw new Error(second.errorMessage ?? '工具结果回传后的模型请求失败')
+    if (!textOf(second).includes(nonce)) throw new Error('最终回答没有包含经过工具验证的 nonce')
+
+    const usage = {
+      inputTokens: first.usage.input + second.usage.input,
+      outputTokens: first.usage.output + second.usage.output,
+      cachedInputTokens: first.usage.cacheRead + second.usage.cacheRead,
+    }
+    const appConnection = process.argv.includes('--app') ? await appConnectionSmoke(apiKey) : undefined
+    process.stdout.write(`${JSON.stringify({ ok: true, provider: PROVIDER, model: MODEL_ID, toolRoundTrip: true, latencyMs: Date.now() - started, usage, ...(appConnection ? { appConnection } : {}) })}\n`)
   }
-  const messages = [{
-    role: 'user',
-    content: `这是连接与工具调用测试。必须调用 echo_nonce，nonce 必须精确填写为 ${nonce}。拿到工具结果后只输出该 nonce。`,
-    timestamp: Date.now(),
-  }]
-  const options = { maxTokens: 8_192, reasoning: 'medium', maxRetries: 0, timeoutMs: 120_000, sessionId: `smoke-${randomUUID()}` }
-  const started = Date.now()
-  const first = await models.completeSimple(model, { systemPrompt: 'You are a deterministic connection-test agent. Follow the tool instruction exactly.', messages, tools: [tool] }, options)
-  if (first.stopReason === 'error' || first.stopReason === 'aborted') throw new Error(first.errorMessage ?? '首次模型请求失败')
-  const call = first.content.find((part) => part.type === 'toolCall' && part.name === 'echo_nonce')
-  if (!call) throw new Error(`模型没有调用 echo_nonce（stopReason=${first.stopReason}）`)
-  if (call.arguments?.nonce !== nonce) throw new Error('模型生成的工具参数与测试 nonce 不一致')
-
-  messages.push(first)
-  messages.push({
-    role: 'toolResult',
-    toolCallId: call.id,
-    toolName: call.name,
-    content: [{ type: 'text', text: nonce }],
-    details: { verified: true },
-    isError: false,
-    timestamp: Date.now(),
-  })
-  const second = await models.completeSimple(model, { systemPrompt: 'You are a deterministic connection-test agent. Follow the tool instruction exactly.', messages, tools: [tool] }, options)
-  if (second.stopReason === 'error' || second.stopReason === 'aborted') throw new Error(second.errorMessage ?? '工具结果回传后的模型请求失败')
-  if (!textOf(second).includes(nonce)) throw new Error('最终回答没有包含经过工具验证的 nonce')
-
-  const usage = {
-    inputTokens: first.usage.input + second.usage.input,
-    outputTokens: first.usage.output + second.usage.output,
-    cachedInputTokens: first.usage.cacheRead + second.usage.cacheRead,
-  }
-  const appConnection = process.argv.includes('--app') ? await appConnectionSmoke(apiKey) : undefined
-  process.stdout.write(`${JSON.stringify({ ok: true, provider: PROVIDER, model: MODEL_ID, toolRoundTrip: true, latencyMs: Date.now() - started, usage, ...(appConnection ? { appConnection } : {}) })}\n`)
 } catch (error) {
   process.stderr.write(`${JSON.stringify({ ok: false, provider: PROVIDER, model: MODEL_ID, error: redact(error instanceof Error ? error.message : error, apiKey) })}\n`)
   process.exitCode = 1

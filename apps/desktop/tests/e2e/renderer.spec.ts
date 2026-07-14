@@ -125,6 +125,12 @@ async function installMockBridge(page: Page, onboarding: boolean, failModelSecre
           ],
           pendingApprovals: state.approvalPending ? [{ id: 'approval-1', runId: 'run-1', toolCallId: 'tool-1', toolName: 'shell_run', riskLevel: 'reversible_write', title: '运行项目验证命令', reason: '构建会写入缓存', target: 'pnpm test', arguments: { command: 'pnpm test' }, sendsData: [], reversible: true, status: 'pending', createdAt: now }] : [],
           artifacts: [{ id: 'diff-1', runId: 'run-1', kind: 'diff', sha256: 'b'.repeat(64), mediaType: 'text/x-diff', byteLength: 90, displayName: 'tool-broker.ts.diff', createdAt: now, metadata: { path: '/tmp/workbuddy-demo/tool-broker.ts', additions: 4, deletions: 1, snapshotArtifactId: 'snapshot-1', afterSha256: 'c'.repeat(64), createdFile: false } }],
+          traces: presentationMode ? [{ id: 'trace-1', runId: 'run-1', rootSpanId: 'span-root', status: 'succeeded', startedAt: '2026-07-10T16:50:00.000Z', endedAt: '2026-07-10T16:50:04.000Z', metadata: {} }] : [],
+          traceSpans: presentationMode ? [
+            { id: 'span-root', traceId: 'trace-1', kind: 'run_turn', name: '搜索今日新闻', status: 'succeeded', startedAt: '2026-07-10T16:50:00.000Z', endedAt: '2026-07-10T16:50:04.000Z', durationMs: 4_000, attributes: {}, artifactIds: [] },
+            { id: 'span-context', traceId: 'trace-1', parentSpanId: 'span-root', kind: 'context_stage', name: '准备工具回执与来源', status: 'succeeded', startedAt: '2026-07-10T16:50:00.000Z', endedAt: '2026-07-10T16:50:01.000Z', durationMs: 1_000, attributes: { selectedItems: 8 }, artifactIds: [] },
+            { id: 'span-model', traceId: 'trace-1', parentSpanId: 'span-root', kind: 'model_turn', name: '生成最终回答', status: 'succeeded', startedAt: '2026-07-10T16:50:01.000Z', endedAt: '2026-07-10T16:50:04.000Z', durationMs: 3_000, usage: { inputTokens: 1200, outputTokens: 260 }, attributes: { provider: 'openai' }, artifactIds: [] },
+          ] : [],
           ...(statusUxScenarioMode === 'current-verified' ? {
             verification: { status: 'verified', summary: '本轮检查已经通过。', checks: [{ name: '当前结果检查', status: 'passed' }] },
           } : statusUxScenarioMode === 'current-partial' ? {
@@ -316,6 +322,25 @@ test('工作结果安全渲染 Markdown、过滤空消息并保持可追问', as
   })
   expect(layout.composerBottom).toBeLessThanOrEqual(layout.viewport + 1)
   expect(layout.paneBottom).toBeLessThanOrEqual(layout.viewport + 1)
+})
+
+test('层级 Trace 只在活动诊断中按需展开，不暴露隐藏推理', async ({ page }) => {
+  await installMockBridge(page, false, false, true)
+  await page.goto('/')
+
+  await expect(page.getByText('准备工具回执与来源')).toBeHidden()
+  const inspector = await ensureInspector(page)
+  await inspector.getByRole('tab', { name: '活动' }).click()
+  const diagnostic = inspector.getByText('阶段诊断').locator('..')
+  await expect(diagnostic).toContainText('3 个阶段 · 4.0 s')
+  await expect(diagnostic).toContainText('不包含隐藏思维链')
+  await expect(inspector.getByText('准备工具回执与来源')).toBeHidden()
+
+  await diagnostic.locator('details.trace-diagnostics > summary').click()
+  await expect(inspector.getByText('准备工具回执与来源')).toBeVisible()
+  await inspector.getByText('技术详情').last().click()
+  await expect(inspector).toContainText('inputTokens')
+  await expect(inspector).not.toContainText('reasoning_content')
 })
 
 test('新追问立即显示为右侧气泡，并排在工具活动之后且持久化后不重复', async ({ page }) => {

@@ -14,7 +14,7 @@ interface WorkTimelineProps {
 
 const TOOL_LABELS: Record<string, string> = {
   web_search: '搜索网页', web_fetch: '读取网页', file_list: '浏览文件', file_read: '读取文件', file_search: '搜索工作区', attachment_open: '打开附件', output_register: '登记产物',
-  file_write: '写入文件', file_draft_start: '开始长文草稿', file_draft_append: '续写长文草稿', file_draft_commit: '提交长文草稿', file_replace: '修改文件', file_delete: '移入废纸篓', shell_run: '运行命令', task_plan: '整理计划',
+  file_write: '写入文件', file_draft_start: '开始长文草稿', file_draft_append: '续写长文草稿', file_draft_commit: '提交长文草稿', file_replace: '修改文件', file_delete: '移入废纸篓', shell_run: '运行命令', process_start: '启动后台进程', process_poll: '读取后台进程', process_stop: '停止后台进程', document_render: '导出 PDF', task_plan: '整理计划',
   task_step_update: '更新步骤', task_complete: '完成检查', skill_read: '读取技能', memory_propose: '提出记忆', agent_delegate: '并行处理',
   chrome_tabs: '查看授权标签', chrome_snapshot: '读取网页', chrome_screenshot: '网页截图', chrome_navigate: '打开网页', chrome_click: '点击网页', chrome_type: '网页输入',
   mcp_list_tools: '发现连接能力', mcp_call_tool: '使用连接',
@@ -165,6 +165,21 @@ function safeFailureMessage(detail: RunDetailView): string {
   return raw.length > 180 ? `${raw.slice(0, 179)}…` : raw
 }
 
+function visiblePhase(detail: RunDetailView): string {
+  if (detail.status === 'verifying') return '正在验证结果'
+  const activeSpan = [...detail.traceSpans].reverse().find((span) => span.status === 'running' || span.status === 'waiting')
+  if (activeSpan?.kind === 'tool_call') return /web_|search|fetch/i.test(activeSpan.name) ? '正在检索资料' : '正在执行操作'
+  if (activeSpan?.kind === 'managed_process') return '后台进程正在运行'
+  if (activeSpan?.kind === 'context_stage') return '正在准备上下文'
+  if (activeSpan?.kind === 'checkpoint') return '正在整理上下文'
+  if (activeSpan?.kind === 'verification') return '正在验证结果'
+  if (activeSpan?.kind === 'model_turn') return '正在生成结果'
+  if (detail.status === 'planning' || detail.status === 'understanding') return '正在准备工作'
+  if (detail.progress?.phase === 'executing') return '正在执行操作'
+  if (detail.progress?.phase === 'verifying') return '正在验证结果'
+  return '正在生成结果'
+}
+
 export function WorkTimeline({ detail, approvals, onOpenDetails, onOpenChanges }: WorkTimelineProps) {
   const tailRef = useRef<HTMLDivElement>(null)
   const followTailRef = useRef(true)
@@ -211,7 +226,7 @@ export function WorkTimeline({ detail, approvals, onOpenDetails, onOpenChanges }
           </section>
         )
       })}
-      {active && <div className="agent-working" role="status" aria-live="polite"><Icon name="activity" size={14} /><span>{detail.progress?.message ?? (detail.status === 'verifying' ? '正在检查结果' : detail.status === 'planning' ? '正在整理步骤' : '正在处理')}</span></div>}
+      {active && <div className="agent-working" role="status" aria-live="polite"><Icon name="activity" size={14} /><span>{visiblePhase(detail)}</span></div>}
       {detail.status === 'failed' && <div className="inline-notice error"><Icon name="warning" /><span>{safeFailureMessage(detail)}</span></div>}
       <div ref={tailRef} className="timeline-tail" aria-hidden="true" />
     </div>

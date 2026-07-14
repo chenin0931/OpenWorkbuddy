@@ -69,7 +69,7 @@ export function WelcomeComposer({
               value={accessMode}
               onChange={(event) => setAccessMode(event.target.value as RunAccessMode)}
               aria-label="工作执行权限"
-              title="完全访问会自动执行文件、网络、Shell、MCP 与浏览器操作，不再逐项确认"
+              title="完全访问会自动执行普通读取、公开检索、可逆写入与常规命令；删除、发布、上传和凭据访问仍需确认"
             >
               <option value="approval">请求批准</option>
               <option value="full_disk">完全访问（自动）</option>

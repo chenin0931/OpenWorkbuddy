@@ -23,6 +23,8 @@ import type {
   SettingsView,
   SkillItem,
   ToolActivityItem,
+  RunTraceItem,
+  TraceSpanItem,
   VerificationView,
   WorkbenchSnapshot,
   WorkspaceItem,
@@ -608,6 +610,51 @@ function normalizeDiff(value: unknown, index: number): DiffItem {
   return item
 }
 
+const TRACE_STATUSES = new Set<TraceSpanItem['status']>(['running', 'succeeded', 'failed', 'cancelled', 'waiting', 'interrupted'])
+const TRACE_KINDS = new Set<TraceSpanItem['kind']>(['run_turn', 'context_stage', 'model_turn', 'tool_call', 'approval_wait', 'checkpoint', 'verification', 'managed_process'])
+
+function normalizeRunTrace(value: unknown, index: number): RunTraceItem {
+  const source = record(value)
+  const status = textValue(source, ['status']) as RunTraceItem['status']
+  const item: RunTraceItem = {
+    ...source,
+    id: idValue(source, 'trace', index),
+    rootSpanId: textValue(source, ['rootSpanId', 'root_span_id']),
+    status: TRACE_STATUSES.has(status) ? status : 'interrupted',
+    startedAt: textValue(source, ['startedAt', 'started_at']),
+    metadata: record(source.metadata),
+  }
+  const endedAt = textValue(source, ['endedAt', 'ended_at'])
+  if (endedAt) item.endedAt = endedAt
+  return item
+}
+
+function normalizeTraceSpan(value: unknown, index: number): TraceSpanItem {
+  const source = record(value)
+  const status = textValue(source, ['status']) as TraceSpanItem['status']
+  const kind = textValue(source, ['kind']) as TraceSpanItem['kind']
+  const item: TraceSpanItem = {
+    ...source,
+    id: idValue(source, 'span', index),
+    traceId: textValue(source, ['traceId', 'trace_id']),
+    kind: TRACE_KINDS.has(kind) ? kind : 'tool_call',
+    name: textValue(source, ['name'], '执行阶段'),
+    status: TRACE_STATUSES.has(status) ? status : 'interrupted',
+    startedAt: textValue(source, ['startedAt', 'started_at']),
+    attributes: record(source.attributes),
+    artifactIds: arrayValue(source.artifactIds, ['items']).filter((item): item is string => typeof item === 'string'),
+  }
+  const parentSpanId = textValue(source, ['parentSpanId', 'parent_span_id'])
+  const endedAt = textValue(source, ['endedAt', 'ended_at'])
+  const durationMs = numberValue(source, ['durationMs', 'duration_ms'])
+  if (parentSpanId) item.parentSpanId = parentSpanId
+  if (endedAt) item.endedAt = endedAt
+  if (durationMs !== undefined) item.durationMs = durationMs
+  if (source.usage && typeof source.usage === 'object') item.usage = record(source.usage)
+  if (source.error && typeof source.error === 'object') item.error = record(source.error)
+  return item
+}
+
 export async function getRunDetail(runId: string, fallback?: RunItem): Promise<RunDetailView> {
   const raw = await optionalCall<unknown>([
     { path: 'runs.get', args: [{ id: runId }] },
@@ -637,6 +684,8 @@ export async function getRunDetail(runId: string, fallback?: RunItem): Promise<R
     artifacts,
     diffs: explicitDiffs.length ? explicitDiffs : artifactDiffs,
     context: arrayValue(section(source, ['context', 'contextItems']), ['items']).map(record),
+    traces: arrayValue(section(source, ['traces']), ['items']).map(normalizeRunTrace),
+    traceSpans: arrayValue(section(source, ['traceSpans']), ['items', 'spans']).map(normalizeTraceSpan),
     ...(verification ? { verification } : {}),
     ...(progress ? { progress } : {}),
   }

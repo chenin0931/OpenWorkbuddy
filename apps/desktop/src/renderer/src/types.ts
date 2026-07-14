@@ -104,6 +104,34 @@ export interface RunProgressItem extends JsonRecord {
   updatedAt?: string
 }
 
+export type TraceSpanKind = 'run_turn' | 'context_stage' | 'model_turn' | 'tool_call' | 'approval_wait' | 'checkpoint' | 'verification' | 'managed_process'
+export type TraceSpanStatus = 'running' | 'succeeded' | 'failed' | 'cancelled' | 'waiting' | 'interrupted'
+
+export interface RunTraceItem extends JsonRecord {
+  id: string
+  rootSpanId: string
+  status: TraceSpanStatus
+  startedAt: string
+  endedAt?: string
+  metadata: JsonRecord
+}
+
+export interface TraceSpanItem extends JsonRecord {
+  id: string
+  traceId: string
+  parentSpanId?: string
+  kind: TraceSpanKind
+  name: string
+  status: TraceSpanStatus
+  startedAt: string
+  endedAt?: string
+  durationMs?: number
+  usage?: JsonRecord
+  error?: JsonRecord
+  attributes: JsonRecord
+  artifactIds: string[]
+}
+
 export interface ApprovalItem extends JsonRecord {
   id: string
   title: string
@@ -150,6 +178,8 @@ export interface RunDetailView extends RunItem {
   artifacts: ArtifactItem[]
   diffs: DiffItem[]
   context: JsonRecord[]
+  traces: RunTraceItem[]
+  traceSpans: TraceSpanItem[]
   verification?: VerificationView
   progress?: RunProgressItem
 }

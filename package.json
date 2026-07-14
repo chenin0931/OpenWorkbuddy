@@ -17,6 +17,7 @@
     "rebuild:native:electron:x64": "pnpm --filter @onmyworkbuddy/desktop rebuild:electron:x64",
     "test": "pnpm -r test",
     "test:online:kimi": "pnpm --filter @onmyworkbuddy/desktop test:online:kimi",
+    "test:online:kimi:existing": "pnpm --filter @onmyworkbuddy/desktop test:online:kimi:existing",
     "test:online:kimi:app": "pnpm --filter @onmyworkbuddy/desktop test:online:kimi:app",
     "test:e2e": "pnpm --filter @onmyworkbuddy/desktop test:e2e",
     "test:unit": "vitest run",

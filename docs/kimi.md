@@ -36,6 +36,15 @@ pnpm test:online:kimi:app
 
 该命令会为 Electron ABI 重建本地 SQLite 模块，创建隔离的临时 `userData`，通过真实 preload API 保存并测试 Profile，关闭应用后删除整个临时目录。它不启用 Playwright trace、截图、录像或 HAR。
 
+如果本机客户端已经配置了 Kimi Profile，也可以在不重新输入 Key 的情况下验证现有安全存储链路：
+
+```bash
+pnpm package:mac
+pnpm test:online:kimi:existing
+```
+
+该命令先用 SQLite online backup 为现有数据库创建一致性临时快照，再启动刚打包的 `.app`，以相同的 macOS 应用身份通过 `safeStorage` 解密已有 Profile 并调用真实连接测试。原始 Key 不进入命令行、环境变量或测试输出，临时目录在测试结束后删除。开发态 Electron 不具备正式 `.app` 的 Keychain 身份，因此不能代替这项检查。
+
 参考：
 
 - <https://platform.kimi.com/docs/guide/kimi-k2-7-code-quickstart>

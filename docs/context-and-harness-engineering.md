@@ -37,23 +37,22 @@ treated as a security boundary; see [ADR-001](adr-001-pi-agent-core.md).
 
 ## Context Engineering
 
-### Compilation layers
+### Ordered preparation pipeline
 
-The Main-process `RunCoordinator` collects candidate context and passes it to
-the core `compileContext` function. The compiler produces a stable prefix and a
-dynamic suffix instead of one unstructured prompt.
-
-The effective order is:
+`RunCoordinator` owns lifecycle and budget only. It delegates preparation to a
+testable `RunPreparationPipeline`, which emits `CompiledRunInput` plus a
+diagnostic for every stage. The fixed order is:
 
 1. **Platform contract** — non-editable product safety and execution rules.
-2. **User preferences** — editable language and interaction preferences.
-3. **Workspace rules** — product rules plus `WORKBUDDY.md` and `AGENTS.md`.
-4. **Selected Skills** — complete instructions only for Skills selected for the
-   current run.
-5. **Current work** — goal, environment, confirmed Memory, checkpoints and
-   relevant tool results.
-6. **Untrusted content** — attachments, web pages, browser snapshots and MCP
-   data, explicitly marked as data rather than instructions.
+2. **Environment and workspace** — OS, Shell, working directory and authority root.
+3. **User input and attachment manifest** — stable Artifact IDs, types and sizes.
+4. **Workspace rules** — product rules plus `WORKBUDDY.md` and `AGENTS.md`.
+5. **Skill selection** — catalog first, complete instructions only when selected.
+6. **Memory selection** — confirmed entries within the current authority scope.
+7. **Checkpoint and task state** — goal, plan state, progress and unresolved items.
+8. **Tool receipts and sources** — durable observable results and source references.
+9. **Model capabilities and remaining budget** — immutable model snapshot and limits.
+10. **Context budget** — final ordering, token accounting and compression decision.
 
 ```text
 stablePrefix
@@ -73,8 +72,26 @@ Keeping the high-reuse prefix stable improves provider prompt-cache reuse.
 Task-specific information is appended rather than rewriting previously sent
 messages without a reason.
 
-Implementation: [`packages/core/src/context.ts`](../packages/core/src/context.ts)
+Every item retains source, trust, priority, token estimate and stable-prefix
+metadata. Implementation: [`packages/core/src/context.ts`](../packages/core/src/context.ts),
+[`apps/desktop/src/main/run-preparation-pipeline.ts`](../apps/desktop/src/main/run-preparation-pipeline.ts)
 and [`apps/desktop/src/main/run-coordinator.ts`](../apps/desktop/src/main/run-coordinator.ts).
+
+### Provider-neutral request integrity
+
+Before Pi sends any provider request, `ModelRequestPipeline` treats an Assistant
+ToolCall and its ToolResult as one atomic group. It removes orphan results,
+duplicate or invalid calls, empty Assistant envelopes and invalid tool
+definitions. If a result is missing, it restores the exact durable receipt by
+`providerCallId`; if recovery is impossible, it inserts an explicit error
+receipt rather than pretending success. A model request is blocked while a tool
+is still running or waiting for approval. Provider-specific OpenAI, Anthropic
+or Kimi compatibility fixes run only after these neutral checks.
+
+Non-idempotent actions are never reconstructed as a new executable call. The
+pipeline repairs conversational integrity, not real-world effects.
+
+Implementation: [`apps/desktop/src/workers/model-request-pipeline.ts`](../apps/desktop/src/workers/model-request-pipeline.ts).
 
 ### Trust is explicit
 
@@ -148,6 +165,8 @@ Compression follows these rules:
 
 - retain the platform contract, current task, stable items and existing
   checkpoint;
+- retain Assistant ToolCall + ToolResult groups atomically and restore durable
+  receipts before a provider request;
 - retain other items by priority while they fit;
 - summarize dropped items into a bounded checkpoint;
 - include source references and instruct the Agent to reopen original sources
@@ -262,20 +281,21 @@ Risk levels are:
 The user makes one durable per-run access decision beside the composer attachment
 control. `approval` retains the selected project as the authorization root and
 keeps non-read actions behind approval. `full_disk` changes the Runner
-authorization root to `/` and automatically permits only enumerated low-risk
-local actions, such as stale-write-guarded file mutations and recognized local
-validation commands. Search queries, unknown Shell commands and outbound
-actions classified as external side effects remain approval-gated. There is no global `cautious` / `balanced` / `autonomous`
+authorization root to `/` and automatically permits ordinary reads, public Web
+Search/GET, stale-write-guarded reversible file mutations and classified local
+Shell commands. There is no global `cautious` / `balanced` / `autonomous`
 selector in the product UI.
 
 This per-run mode can only turn eligible `require_approval` decisions into
-`allow`. It cannot override `deny`, mutating external side effects, network
-commands, destructive operations or high-risk irreversible actions. The
+`allow`. It cannot override `deny`, destructive operations, publishing,
+uploading, POST/submit/payment actions, credential boundaries or other
+high-risk external effects. The
 Main-process broker remains the enforcement point; the model and Renderer cannot
 promote their own access. The project
 workspace remains the relative-path base, Shell cwd and source of workspace
-rules. Destructive or off-device actions are never relaxed by this switch, and
-macOS TCC remains the final OS-level boundary.
+rules. Sensitive files such as `.env` require one-shot approval; the app's key
+database, Keychain material, browser cookies/login data and SSH private keys are
+hard-denied. macOS TCC remains the final OS-level boundary.
 
 High-risk and external-side-effect grants cannot silently become broad permanent
 authority. Non-idempotent actions are never automatically replayed after an
@@ -313,7 +333,9 @@ serialized with file leases.
 - **Shell:** a narrow deterministic allowlist covers commands such as `pwd`,
   `ls`, `rg` and read-only Git inspection. In request-approval mode, unknown
   commands and side effects pause for approval. Full-access mode automatically
-  executes every command not blocked by a deterministic product boundary.
+  executes classified ordinary local commands; delete, publish, authenticated
+  network, POST/upload and system-changing commands still require one-shot
+  approval or are denied.
 - **Web:** Search and Fetch enforce URL, redirect, address and response-size
   checks. Returned pages remain untrusted context.
 - **MCP:** stdio and Streamable HTTP servers are namespaced and schema
@@ -321,8 +343,8 @@ serialized with file leases.
   code and is not represented as sandboxed.
 - **Chrome:** the user must bind a tab to a run. The grant covers that tab and
   tabs opened from it, not unrelated existing tabs. Cookie export is not
-  supported. Submit, upload, purchase, send and delete actions require approval
-  in request-approval mode and execute automatically in full-access mode.
+  supported. Submit, upload, purchase, send and delete actions require one-shot
+  approval in every access mode.
 
 The full limitations are documented in [the security model](security.md).
 
@@ -341,6 +363,33 @@ Deterministic signals such as type checking, lint, tests, builds and path checks
 are preferred over model self-evaluation. The model can use those observations
 to correct parameters or implementation, but cannot mark an operation as
 authorized or verified by assertion alone.
+
+Long-running commands use `process_start`, `process_poll` and `process_stop`
+instead of blocking one tool call. The Runner owns the child process, Main
+persists its state and Trace Span, cursor polling returns bounded increments,
+and the full terminal log becomes an Artifact. Up to three processes may run
+per task; they stop on explicit application exit and are marked `interrupted`
+after a Runner/application crash rather than replayed.
+
+Report export uses `document_render`: Markdown is converted with raw HTML
+disabled inside a hidden sandboxed BrowserWindow with navigation and network
+disabled, authorized local images are embedded as Data URLs, and Electron
+`printToPDF` creates a verified PDF that is automatically registered as a final
+output. This replaces speculative Shell probing and package installation.
+
+### Hierarchical Trace and audit integrity
+
+Each user message starts one `run_turn` root Span. Context stages, model turns,
+tool calls, approval waits, checkpoints, verification and managed processes are
+children. High-frequency text deltas are intentionally excluded. The Renderer
+shows only a compact phase in the conversation; the latest Trace is available
+inside the secondary Activity diagnostic disclosure. Diagnostics include
+duration, token usage, Artifact references and redacted errors, never hidden
+reasoning or secrets.
+
+New audit entries include `prev_hash` and `entry_hash`, computed from canonical
+redacted JSON with SHA-256. Legacy entries remain readable and are explicitly
+identified as legacy during export.
 
 ### Completion gate
 
@@ -375,7 +424,8 @@ When the application or a utility process exits unexpectedly, recovery:
 6. does not replay non-idempotent external actions.
 
 The audit log stores action summaries, approvals, errors, token usage, latency
-and result references. Hidden chain-of-thought is neither required nor stored.
+and result references. Open Trace spans and managed processes become
+`interrupted` on recovery. Hidden chain-of-thought is neither required nor stored.
 
 Implementation: [`apps/desktop/src/main/database.ts`](../apps/desktop/src/main/database.ts)
 and [`apps/desktop/src/main/run-coordinator.ts`](../apps/desktop/src/main/run-coordinator.ts).
@@ -402,12 +452,14 @@ or retry behavior even when the UI is unchanged.
 Regression coverage therefore includes:
 
 - stable context ordering, Memory admission and 70% checkpointing;
+- atomic ToolCall/ToolResult repair for OpenAI, Anthropic and Kimi requests;
 - untrusted-content labeling and large-result offloading;
 - policy classification and approval scope;
 - realpath, symlink and stale-write protection;
 - provider event conversion and progressive tools;
 - verification gates and non-replay behavior;
 - SQLite crash recovery and worker failure;
+- Trace hierarchy, audit chaining, managed-process cancellation and PDF export;
 - Chrome tab authority and disconnect recovery;
 - Renderer aggregation so internal Harness state is not exposed as a debugging
   console.
