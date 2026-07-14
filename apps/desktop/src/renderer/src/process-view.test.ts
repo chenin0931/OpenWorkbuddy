@@ -83,6 +83,11 @@ describe('process view model', () => {
     expect(JSON.stringify(process)).not.toContain('/Users/chen')
   })
 
+  it('uses a natural workspace label for legacy filesystem list receipts', () => {
+    const process = timeline({ tools: [tool('list-1', 'filesystem_list', 2, { argumentsSummary: { path: '.' } })] })
+    expect(process?.steps.some((step) => step.kind === 'file' && step.title === '浏览了工作区')).toBe(true)
+  })
+
   it('marks a recovered failure as warning without failing the process', () => {
     const process = timeline({
       tools: [

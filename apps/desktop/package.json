@@ -1,6 +1,6 @@
 {
   "name": "@onmyworkbuddy/desktop",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "A local-first macOS desktop agent with auditable tools, approvals, memory and automation.",
   "author": "OpenWorkbuddy",
   "license": "MIT",

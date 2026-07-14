@@ -1,6 +1,6 @@
 {
   "name": "on-my-workbuddy",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "license": "MIT",
   "private": true,
   "packageManager": "pnpm@10.28.2",

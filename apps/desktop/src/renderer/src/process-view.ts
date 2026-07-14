@@ -132,7 +132,7 @@ function semanticToolKind(name: string): ProcessStepKind {
   if (name.startsWith('chrome_') || name.startsWith('browser_')) return 'browser'
   if (/^(?:output_register|document_render)$/.test(name)) return 'output'
   if (/^(?:file_write|file_replace|file_delete|file_draft_)/.test(name)) return 'write'
-  if (/^(?:file_|attachment_)/.test(name)) return 'file'
+  if (/^(?:file_|filesystem_|attachment_)/.test(name)) return 'file'
   if (/^(?:shell_|process_|terminal_|exec_)/.test(name)) return 'command'
   if (/^(?:mcp_|[^/]+\/[^/]+$)/.test(name)) return 'connector'
   if (/^(?:task_plan|task_step_update|agent_delegate)$/.test(name)) return 'plan'
@@ -163,9 +163,11 @@ function toolPresentation(tool: ToolActivityItem): { kind: ProcessStepKind; titl
     return { kind, title: titles[name] ?? '操作了网页', ...(summary ? { detail: summary } : {}), mergeKey: `browser:${name}` }
   }
   if (kind === 'file' || kind === 'write') {
-    const path = safePath(stringValue(args, ['path', 'filePath', 'target', 'outputPath']))
-    const action = kind === 'write' ? '更新了' : name === 'file_search' ? '搜索了' : name === 'file_list' ? '浏览了' : '读取了'
-    return { kind, title: path ? `${action} ${path}` : kind === 'write' ? '更新了工作区文件' : '检查了工作区文件', ...(summary ? { detail: summary } : {}), mergeKey: `${kind}:${name}` }
+    const rawPath = stringValue(args, ['path', 'filePath', 'target', 'outputPath'])
+    const path = rawPath === '.' ? '' : safePath(rawPath)
+    const action = kind === 'write' ? '更新了' : /^(?:file|filesystem)_search$/.test(name) ? '搜索了' : /^(?:file|filesystem)_list$/.test(name) ? '浏览了' : '读取了'
+    const fallback = kind === 'write' ? '更新了工作区文件' : action === '浏览了' ? '浏览了工作区' : action === '搜索了' ? '搜索了工作区文件' : '读取了工作区文件'
+    return { kind, title: path ? `${action} ${path}` : fallback, ...(summary ? { detail: summary } : {}), mergeKey: `${kind}:${name}` }
   }
   if (kind === 'command') {
     const title = sanitizeProcessText(tool.title, 80) || (name.startsWith('process_') ? '运行了后台任务' : '运行了本地命令')
@@ -242,7 +244,10 @@ function mergeConsecutive(steps: DraftStep[]): ProcessStepViewModel[] {
     previous.traceSpanIds = unique([...previous.traceSpanIds, ...step.traceSpanIds])
     previous.title = mergedTitle(previous)
   }
-  return merged.map(({ mergeKey: _mergeKey, ...step }) => step)
+  return merged.map(({ mergeKey, ...step }) => {
+    void mergeKey
+    return step
+  })
 }
 
 function processState(steps: ProcessStepViewModel[]): ProcessStepState {
