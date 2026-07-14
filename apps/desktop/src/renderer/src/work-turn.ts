@@ -1,10 +1,13 @@
 import type {
+  ApprovalItem,
   EventItem,
   PlanStepItem,
   RunDetailView,
   RunStatus,
   ToolActivityItem,
+  TraceSpanItem,
 } from './types'
+import { buildProcessTimeline } from './process-view'
 import type {
   ActivityGroup,
   ActivityKind,
@@ -28,6 +31,8 @@ interface TurnDraft {
   assistantEvents: EventItem[]
   tools: ToolActivityItem[]
   steps: PlanStepItem[]
+  traceSpans: TraceSpanItem[]
+  approvals: ApprovalItem[]
   startedAt?: string
   boundaryAt?: number
 }
@@ -121,13 +126,34 @@ function coalesceAssistantContent(events: EventItem[]): string {
   return chunks.join('\n\n')
 }
 
-function makeResponse(turnId: string, events: EventItem[]): AssistantResponseView {
+function makeResponse(
+  turnId: string,
+  events: EventItem[],
+  tools: ToolActivityItem[],
+  runStatus: RunStatus,
+): AssistantResponseView {
   const dated = events.filter((event) => event.createdAt)
   const createdAt = dated[0]?.createdAt
   const updatedAt = dated.at(-1)?.createdAt
+  const terminal = !['understanding', 'planning', 'running', 'verifying'].includes(runStatus)
+  const lastToolAt = Math.max(
+    ...tools
+      .map((tool) => timestamp(tool.updatedAt ?? tool.createdAt))
+      .filter((value): value is number => value !== undefined),
+    Number.NEGATIVE_INFINITY,
+  )
+  const afterTools = Number.isFinite(lastToolAt)
+    ? events.filter((event) => {
+      const at = timestamp(event.createdAt)
+      return at !== undefined && at >= lastToolAt
+    })
+    : events
+  const selected = tools.length
+    ? (afterTools.at(-1) ?? (terminal ? events.at(-1) : undefined))
+    : undefined
   return {
     id: `${turnId}-response`,
-    content: coalesceAssistantContent(events),
+    content: selected ? eventContent(selected) : tools.length ? '' : coalesceAssistantContent(events),
     messageIds: events.map((event) => event.id),
     ...(createdAt ? { createdAt } : {}),
     ...(updatedAt ? { updatedAt } : {}),
@@ -263,6 +289,17 @@ function targetTurnIndex(turns: TurnDraft[], value: ToolActivityItem | PlanStepI
   return 0
 }
 
+function targetTimestampIndex(turns: TurnDraft[], value: unknown): number {
+  if (turns.length <= 1) return 0
+  const at = timestamp(value)
+  if (at === undefined) return turns.length - 1
+  for (let index = turns.length - 1; index >= 0; index -= 1) {
+    const boundary = turns[index]?.boundaryAt
+    if (boundary === undefined || at >= boundary) return index
+  }
+  return 0
+}
+
 function buildResult(detail: RunDetailView): ResultEvidence | undefined {
   const result: ResultEvidence = {
     ...(detail.verification?.status ? { status: detail.verification.status } : {}),
@@ -287,6 +324,8 @@ export function buildWorkTurns(detail: RunDetailView): WorkTurnViewModel[] {
         assistantEvents: [],
         tools: [],
         steps: [],
+        traceSpans: [],
+        approvals: [],
         ...(message.event.createdAt ? { startedAt: message.event.createdAt } : {}),
         ...(message.at !== undefined ? { boundaryAt: message.at } : {}),
       })
@@ -303,6 +342,8 @@ export function buildWorkTurns(detail: RunDetailView): WorkTurnViewModel[] {
       assistantEvents: messages.filter(({ event }) => event.actor === 'agent').map(({ event }) => event),
       tools: [],
       steps: [],
+      traceSpans: [],
+      approvals: [],
       ...(detail.createdAt ? { startedAt: detail.createdAt } : {}),
       ...(boundaryAt !== undefined ? { boundaryAt } : {}),
     })
@@ -310,6 +351,11 @@ export function buildWorkTurns(detail: RunDetailView): WorkTurnViewModel[] {
 
   for (const tool of detail.toolCalls) drafts[targetTurnIndex(drafts, tool)]?.tools.push(tool)
   for (const step of detail.steps) drafts[targetTurnIndex(drafts, step)]?.steps.push(step)
+  for (const span of detail.traceSpans) drafts[targetTimestampIndex(drafts, span.startedAt)]?.traceSpans.push(span)
+  for (const approval of detail.approvals) {
+    const createdAt = typeof approval.createdAt === 'string' ? approval.createdAt : undefined
+    drafts[targetTimestampIndex(drafts, createdAt)]?.approvals.push(approval)
+  }
 
   const lastIndex = drafts.length - 1
   const result = buildResult(detail)
@@ -319,7 +365,8 @@ export function buildWorkTurns(detail: RunDetailView): WorkTurnViewModel[] {
   )
 
   return drafts.map((draft, index): WorkTurnViewModel => {
-    const response = makeResponse(draft.id, draft.assistantEvents)
+    const isLatest = index === lastIndex
+    const response = makeResponse(draft.id, draft.assistantEvents, draft.tools, isLatest ? detail.status : 'completed')
     const updatedAt = response.updatedAt
       ?? draft.tools.map((tool) => tool.updatedAt ?? tool.createdAt).filter((value): value is string => Boolean(value)).at(-1)
       ?? draft.startedAt
@@ -328,8 +375,25 @@ export function buildWorkTurns(detail: RunDetailView): WorkTurnViewModel[] {
       prompt: draft.prompt,
       response,
       activity: settleActivityGroups(buildActivityGroups(draft.tools, draft.steps), detail),
-      ...(index === lastIndex && result ? { result } : {}),
-      ...(index === lastIndex && attention ? { attention } : {}),
+      ...(() => {
+        const process = buildProcessTimeline({
+          turnId: draft.id,
+          prompt: draft.prompt.content,
+          tools: draft.tools,
+          steps: draft.steps,
+          traceSpans: draft.traceSpans,
+          approvals: draft.approvals,
+          artifacts: isLatest ? detail.artifacts : [],
+          verification: isLatest ? detail.verification : undefined,
+          runStatus: isLatest ? detail.status : 'completed',
+          isLatest,
+          startedAt: draft.startedAt,
+          endedAt: isLatest ? detail.updatedAt : updatedAt,
+        })
+        return process ? { process } : {}
+      })(),
+      ...(isLatest && result ? { result } : {}),
+      ...(isLatest && attention ? { attention } : {}),
       ...(draft.startedAt ? { startedAt: draft.startedAt } : {}),
       ...(updatedAt ? { updatedAt } : {}),
     }

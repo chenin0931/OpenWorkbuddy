@@ -54,8 +54,9 @@ describe('WorkTurn view model', () => {
     expect(turns).toHaveLength(2)
     expect(turns[0]).toMatchObject({
       prompt: { content: '先读取项目' },
-      response: { content: '我先查看项目。\n\n已经找到入口。', messageIds: ['assistant-1', 'assistant-2'] },
+      response: { content: '已经找到入口。', messageIds: ['assistant-1', 'assistant-2'] },
       activity: [{ kind: 'files', state: 'completed', count: 1, summary: '已完成 1 项文件操作', eventIds: ['read-1'] }],
+      process: { state: 'succeeded', headline: '2 个步骤' },
     })
     expect(turns[1]).toMatchObject({
       prompt: { content: '再运行测试' },
@@ -85,8 +86,9 @@ describe('WorkTurn view model', () => {
       ],
     }))
 
-    expect(turns[0]?.response.content).toBe('正在处理')
+    expect(turns[0]?.response.content).toBe('')
     expect(turns[0]?.attention).toBe('working')
+    expect(turns[0]?.process?.headline).toContain('正在')
     expect(turns[0]?.activity.map(({ kind, state, summary }) => ({ kind, state, summary }))).toEqual([
       { kind: 'files', state: 'completed', summary: '已完成 2 项文件操作' },
       { kind: 'shell', state: 'running', summary: '正在处理 1 条命令' },
