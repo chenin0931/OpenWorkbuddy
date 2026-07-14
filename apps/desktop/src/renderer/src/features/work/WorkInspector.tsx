@@ -55,6 +55,17 @@ function sourceHost(url: string): string {
   try { return new URL(url).hostname.replace(/^www\./, '') } catch { return '网页来源' }
 }
 
+export function redactDiagnosticText(value: unknown): string {
+  let serialized = ''
+  try { serialized = typeof value === 'string' ? value : JSON.stringify(value, null, 2) } catch { return '' }
+  return serialized
+    .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/gi, '[已隐藏密钥]')
+    .replace(/(bearer\s+)[A-Za-z0-9._~+/=-]{8,}/gi, '$1[已隐藏]')
+    .replace(/("?(?:authorization|cookie|x-api-key|api[_-]?key)"?\s*:\s*")[^"]+/gi, '$1[已隐藏]')
+    .replace(/\/Users\/[^/\s"']+\//g, '…/')
+    .replace(/\/home\/[^/\s"']+\//g, '…/')
+}
+
 function sourcesFor(detail: RunDetailView): SourceItem[] {
   const items = new Map<string, SourceItem>()
   const add = (source: SourceItem) => { if (source.url) items.set(source.url, items.get(source.url) ?? source) }
@@ -151,7 +162,7 @@ function traceDetails(span: TraceSpanItem): string {
     ...(span.error && Object.keys(span.error).length ? { error: span.error } : {}),
     ...(span.artifactIds.length ? { artifactIds: span.artifactIds } : {}),
   }
-  return Object.keys(payload).length ? JSON.stringify(payload, null, 2) : ''
+  return Object.keys(payload).length ? redactDiagnosticText(payload) : ''
 }
 
 function TraceDiagnostics({ detail }: { detail: RunDetailView }) {
@@ -172,13 +183,15 @@ function TraceDiagnostics({ detail }: { detail: RunDetailView }) {
   </Section>
 }
 
-function ActivityPanel({ detail }: { detail: RunDetailView }) {
-  if (!detail.steps.length && !detail.toolCalls.length && !detail.approvalHistory.length && !detail.traceSpans.length) {
-    return <EmptyState compact icon="activity" title="还没有活动" description="读取、命令、网页操作和确认记录会显示在这里。" />
+function DiagnosticsPanel({ detail }: { detail: RunDetailView }) {
+  if (!detail.toolCalls.length && !detail.approvalHistory.length && !detail.traceSpans.length) {
+    return <EmptyState compact icon="activity" title="还没有诊断记录" description="工具参数、确认历史、错误回执和完整 Trace 会显示在这里。" />
   }
   return <>
-    {detail.steps.length > 0 && <Section title="步骤" icon="tasks"><div className="plan-list">{detail.steps.map((step, index) => <div key={step.id} className={`plan-step step-${step.status}`}><span>{step.status === 'completed' ? <Icon name="check" size={14} /> : step.status === 'failed' ? <Icon name="warning" size={14} /> : index + 1}</span><div><strong>{step.title}</strong>{step.detail && <small>{step.detail}</small>}</div></div>)}</div></Section>}
-    {detail.toolCalls.length > 0 && <Section title="执行记录" icon="terminal"><div className="inspector-activity-list">{detail.toolCalls.map((tool) => <div key={tool.id} className={`tool-status-${tool.status}`}><span className="tool-status-dot" /><span><strong>{tool.title ?? TOOL_LABELS[tool.toolName] ?? tool.toolName.replaceAll('_', ' ')}</strong><small>{tool.error ?? tool.summary ?? (tool.status === 'succeeded' ? '已完成' : tool.status === 'failed' ? '没有完成' : '正在处理')}</small></span><time>{formatTime(tool.updatedAt ?? tool.createdAt)}</time></div>)}</div></Section>}
+    {detail.toolCalls.length > 0 && <Section title="工具诊断" icon="terminal"><div className="inspector-activity-list">{detail.toolCalls.map((tool) => {
+      const technical = redactDiagnosticText({ toolCallId: tool.id, toolName: tool.toolName, arguments: tool.argumentsSummary ?? tool.arguments, sources: tool.sources, ...(tool.error ? { error: tool.error } : {}) })
+      return <div key={tool.id} className={`tool-status-${tool.status}`}><span className="tool-status-dot" /><span><strong>{tool.title ?? TOOL_LABELS[tool.toolName] ?? tool.toolName.replaceAll('_', ' ')}</strong><small>{tool.error ?? tool.summary ?? (tool.status === 'succeeded' ? '已完成' : tool.status === 'failed' ? '没有完成' : '正在处理')}</small>{technical && <details className="diagnostic-details"><summary>技术详情</summary><pre>{technical}</pre></details>}</span><time>{formatTime(tool.updatedAt ?? tool.createdAt)}</time></div>
+    })}</div></Section>}
     {detail.approvalHistory.length > 0 && <Section title="确认记录" icon="shield"><div className="inspector-activity-list">{detail.approvalHistory.map((approval) => <div key={approval.id} className={`approval-${approval.status}`}><Icon name={approval.status === 'approved' || approval.status === 'edited' ? 'check' : approval.status === 'rejected' ? 'warning' : 'clock'} size={14} /><span><strong>{approval.title}</strong><small>{approval.status === 'approved' ? '已允许' : approval.status === 'edited' ? '修改后允许' : approval.status === 'rejected' ? '已拒绝' : '需要确认'}</small></span><time>{formatTime(approval.resolvedAt ?? approval.createdAt)}</time></div>)}</div></Section>}
     <TraceDiagnostics detail={detail} />
   </>
@@ -221,7 +234,7 @@ export function WorkInspector(props: WorkInspectorProps) {
   const available = useMemo(() => ({
     details: true,
     changes: detail.diffs.length > 0 || outputs.length > 0,
-    activity: detail.steps.length > 0 || detail.toolCalls.length > 0 || detail.approvalHistory.length > 0 || detail.traceSpans.length > 0,
+    activity: detail.toolCalls.length > 0 || detail.approvalHistory.length > 0 || detail.traceSpans.length > 0,
   }), [detail, outputs.length])
 
   useEffect(() => { setTab(available[requestedTab] ? requestedTab : 'details') }, [available, requestedTab])
@@ -229,7 +242,7 @@ export function WorkInspector(props: WorkInspectorProps) {
   const items = [
     { id: 'details' as const, label: '详细', panel: <DetailsPanel {...props} /> },
     ...(available.changes ? [{ id: 'changes' as const, label: `变更 ${detail.diffs.length || ''}`.trim(), panel: <ChangesPanel {...props} onPreview={setDiffPreview} /> }] : []),
-    ...(available.activity ? [{ id: 'activity' as const, label: '活动', panel: <ActivityPanel detail={detail} /> }] : []),
+    ...(available.activity ? [{ id: 'activity' as const, label: '诊断', panel: <DiagnosticsPanel detail={detail} /> }] : []),
   ]
 
   return (

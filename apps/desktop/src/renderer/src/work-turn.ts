@@ -149,7 +149,7 @@ function makeResponse(
     })
     : events
   const selected = tools.length
-    ? (afterTools.at(-1) ?? (terminal ? events.at(-1) : undefined))
+    ? (terminal ? afterTools.at(-1) ?? events.at(-1) : undefined)
     : undefined
   return {
     id: `${turnId}-response`,

@@ -332,6 +332,14 @@ export function buildProcessTimeline(input: BuildProcessTimelineInput): ProcessT
     drafts.push(baseStep({ id: `${input.turnId}-verify`, kind: 'verify', state: failed ? 'failed' : pending || input.verification.status === 'partial' ? 'warning' : 'succeeded', title: failed ? `${failed} 项检查未通过` : passed ? `${passed} 项检查通过` : '检查了任务结果', detail: input.verification.summary, mergeKey: 'verify' }))
   }
 
+  if (input.runStatus === 'completed') {
+    for (const step of drafts) {
+      if (step.state === 'running' || step.state === 'pending') {
+        step.state = input.verification?.status === 'partial' ? 'warning' : 'succeeded'
+      }
+    }
+  }
+
   const sorted = drafts.sort((left, right) => (timestamp(left.startedAt) ?? Number.MAX_SAFE_INTEGER) - (timestamp(right.startedAt) ?? Number.MAX_SAFE_INTEGER))
   if (input.isLatest && input.runStatus === 'completed') sorted.push(baseStep({ id: `${input.turnId}-complete`, kind: 'complete', state: input.verification?.status === 'partial' ? 'warning' : 'succeeded', title: '已整理并交付结果', endedAt: input.endedAt, mergeKey: 'complete' }))
   const steps = mergeConsecutive(sorted)

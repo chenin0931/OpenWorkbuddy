@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { isUserVisibleArtifact, latestTraceSpans, traceDiagnosticHeadline } from './WorkInspector'
+import { isUserVisibleArtifact, latestTraceSpans, redactDiagnosticText, traceDiagnosticHeadline } from './WorkInspector'
 
 describe('WorkInspector artifact shelf', () => {
   it('shows user-facing outputs and screenshots', () => {
@@ -18,6 +18,13 @@ describe('WorkInspector artifact shelf', () => {
 })
 
 describe('WorkInspector trace diagnostics', () => {
+  it('redacts secrets and home paths from secondary technical details', () => {
+    const text = redactDiagnosticText({ authorization: 'Bearer private-secret-123', path: '/Users/chen/private/data.csv', key: 'sk-1234567890abcdef' })
+    expect(text).not.toContain('private-secret')
+    expect(text).not.toContain('/Users/chen')
+    expect(text).not.toContain('sk-123')
+  })
+
   it('shows only the latest turn in the secondary diagnostic disclosure', () => {
     const spans = latestTraceSpans({
       traces: [
