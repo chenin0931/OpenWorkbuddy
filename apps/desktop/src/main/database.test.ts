@@ -413,4 +413,33 @@ describe('AppDatabase persistence boundary', () => {
     expect(database.getRun(run.id)?.steps[0]).toMatchObject({ id: first[0].id, status: 'completed' })
     database.close()
   })
+
+  it('persists hierarchical trace spans and interrupts open work on recovery', async () => {
+    const { database } = await temporaryDatabase()
+    const run = database.createRun({ title: 'Trace', prompt: 'Trace this turn' })
+    const traceId = database.createRunTrace({ runId: run.id, rootSpanId: 'root-span' })
+    database.createTraceSpan({ id: 'root-span', traceId, kind: 'run_turn', name: 'Turn' })
+    const childId = database.createTraceSpan({ traceId, parentSpanId: 'root-span', kind: 'tool_call', name: 'file_read', attributes: { toolCallId: 'call-1' } })
+    database.finishTraceSpan(childId, 'succeeded', { usage: { input: 12 } })
+    expect(database.listTraceSpans(run.id)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: childId, parentSpanId: 'root-span', status: 'succeeded', usage: { input: 12 } }),
+    ]))
+    expect(database.interruptOpenTraces(run.id)).toBe(1)
+    expect(database.listRunTraces(run.id)[0]).toMatchObject({ id: traceId, status: 'interrupted' })
+    expect(database.listTraceSpans(run.id).find((span) => span.id === 'root-span')).toMatchObject({ status: 'interrupted' })
+    database.close()
+  })
+
+  it('chains new audit events with deterministic hashes while leaving legacy rows readable', async () => {
+    const { database } = await temporaryDatabase()
+    database.db.prepare("INSERT INTO audit_events(category,action,summary,payload_json,created_at) VALUES('legacy','old','old','{}',?)").run(new Date().toISOString())
+    database.audit('test', 'first', 'first event', { actor: 'system', outcome: 'succeeded' })
+    database.audit('test', 'second', 'second event', { actor: 'system', outcome: 'succeeded' })
+    const rows = database.db.prepare('SELECT id,prev_hash,entry_hash FROM audit_events ORDER BY id').all() as any[]
+    expect(rows[0]).toMatchObject({ prev_hash: null, entry_hash: null })
+    expect(rows[1].prev_hash).toBe('legacy-root:1')
+    expect(rows[1].entry_hash).toMatch(/^[a-f0-9]{64}$/)
+    expect(rows[2].prev_hash).toBe(rows[1].entry_hash)
+    database.close()
+  })
 })

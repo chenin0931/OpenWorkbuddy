@@ -393,6 +393,8 @@ export function presentRunDetail(row: any, fallbackModel: ModelProfile): RunDeta
     artifacts: (row.artifacts ?? []).map(presentArtifact),
     ...(persistedVerification ? { verification: persistedVerification } : {}),
     ...(progress ? { progress } : {}),
+    ...((row.traces ?? []).length ? { traces: row.traces } : {}),
+    ...((row.traceSpans ?? []).length ? { traceSpans: row.traceSpans } : {}),
   }
 }
 

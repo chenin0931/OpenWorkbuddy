@@ -496,6 +496,35 @@ export interface RunProgress {
   updatedAt: IsoDateTime
 }
 
+export type TraceSpanKind = 'run_turn' | 'context_stage' | 'model_turn' | 'tool_call' | 'approval_wait' | 'checkpoint' | 'verification' | 'managed_process'
+export type TraceSpanStatus = 'running' | 'succeeded' | 'failed' | 'cancelled' | 'waiting' | 'interrupted'
+
+export interface RunTrace {
+  id: string
+  runId: string
+  rootSpanId: string
+  status: TraceSpanStatus
+  startedAt: IsoDateTime
+  endedAt?: IsoDateTime
+  metadata: JsonValue
+}
+
+export interface TraceSpan {
+  id: string
+  traceId: string
+  parentSpanId?: string
+  kind: TraceSpanKind
+  name: string
+  status: TraceSpanStatus
+  startedAt: IsoDateTime
+  endedAt?: IsoDateTime
+  durationMs?: number
+  usage?: JsonValue
+  error?: JsonValue
+  attributes: JsonValue
+  artifactIds: string[]
+}
+
 export interface RunDetail {
   run: Run
   steps: TaskStep[]
@@ -506,6 +535,8 @@ export interface RunDetail {
   artifacts: ArtifactRef[]
   verification?: VerificationSummary
   progress?: RunProgress
+  traces?: RunTrace[]
+  traceSpans?: TraceSpan[]
 }
 
 export interface BootstrapSnapshot {

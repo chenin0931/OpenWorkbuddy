@@ -584,6 +584,32 @@ export const RunProgressSchema = z.object({
   updatedAt: IsoDateTimeSchema,
 }).strict()
 
+export const TraceSpanStatusSchema = z.enum(['running', 'succeeded', 'failed', 'cancelled', 'waiting', 'interrupted'])
+export const RunTraceSchema = z.object({
+  id: IdSchema,
+  runId: IdSchema,
+  rootSpanId: IdSchema,
+  status: TraceSpanStatusSchema,
+  startedAt: IsoDateTimeSchema,
+  endedAt: IsoDateTimeSchema.optional(),
+  metadata: JsonValueSchema,
+}).strict()
+export const TraceSpanSchema = z.object({
+  id: IdSchema,
+  traceId: IdSchema,
+  parentSpanId: IdSchema.optional(),
+  kind: z.enum(['run_turn', 'context_stage', 'model_turn', 'tool_call', 'approval_wait', 'checkpoint', 'verification', 'managed_process']),
+  name: z.string().min(1),
+  status: TraceSpanStatusSchema,
+  startedAt: IsoDateTimeSchema,
+  endedAt: IsoDateTimeSchema.optional(),
+  durationMs: z.number().int().nonnegative().optional(),
+  usage: JsonValueSchema.optional(),
+  error: JsonValueSchema.optional(),
+  attributes: JsonValueSchema,
+  artifactIds: z.array(IdSchema),
+}).strict()
+
 export const RunDetailSchema = z
   .object({
     run: RunSchema,
@@ -595,6 +621,8 @@ export const RunDetailSchema = z
     artifacts: z.array(ArtifactRefSchema),
     verification: VerificationSummarySchema.optional(),
     progress: RunProgressSchema.optional(),
+    traces: z.array(RunTraceSchema).optional(),
+    traceSpans: z.array(TraceSpanSchema).optional(),
   })
   .strict()
 

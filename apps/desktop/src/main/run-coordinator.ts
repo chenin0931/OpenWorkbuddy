@@ -8,6 +8,7 @@ import { DEFAULT_LIMITS, modelSnapshot, normalizeRunLimits, presentArtifact, pre
 import type { AgentHostBridge, ToolRunnerBridge } from './worker-bridge'
 import { buildDurableCheckpoint } from './context-checkpoint'
 import { RunPreparationPipeline } from './run-preparation-pipeline'
+import { TraceRecorder } from './trace-recorder'
 
 const ACTIVE_RUN_STATUSES = new Set(['understanding', 'planning', 'running', 'verifying', 'waiting_approval'])
 const IGNORE_LATE_AGENT_EVENT_STATUSES = new Set(['waiting_user', 'paused', 'completed', 'failed', 'cancelled'])
@@ -21,6 +22,7 @@ export class RunCoordinator {
   private lastPersistedProgressAt = new Map<string, number>()
   private lastPersistedProgressSignature = new Map<string, string>()
   private preparation: RunPreparationPipeline
+  private traces: TraceRecorder
 
   constructor(
     private database: AppDatabase,
@@ -33,6 +35,7 @@ export class RunCoordinator {
     private notify: (title: string, body: string) => void,
   ) {
     this.preparation = new RunPreparationPipeline(database, artifacts, (runId, checkpoint) => this.persistContextCheckpoint(runId, checkpoint))
+    this.traces = new TraceRecorder(database)
   }
 
   emit = (event: RunEvent): void => {
@@ -41,7 +44,11 @@ export class RunCoordinator {
       : event
     this.database.appendRunEvent(event.runId, event.kind, this.eventSummary(event), persistedEvent as any)
     this.broadcast(event)
-    if (event.kind === 'approval.requested') this.notify('任务等待批准', `${event.approval.title}。打开 OpenWorkbuddy 查看详情。`)
+    if (event.kind === 'approval.requested') {
+      this.traces.startApproval(event.runId, event.approval.id, { toolName: event.approval.toolName, riskLevel: event.approval.riskLevel })
+      this.notify('任务等待批准', `${event.approval.title}。打开 OpenWorkbuddy 查看详情。`)
+    }
+    if (event.kind === 'verification.completed') this.traces.recordVerification(event.runId, { status: event.verification.status, checks: event.verification.checks.length })
   }
 
   async onHostMessage(message: any): Promise<void> {
@@ -148,7 +155,9 @@ export class RunCoordinator {
       const workspace = this.database.getWorkspace(raw.workspaceId)
       if (!workspace) throw new Error('任务工作区不存在')
       const effectivePrompt = prompt ?? (raw.status === 'paused' || raw.status === 'waiting_user' ? '继续此前任务。先核对当前文件、持久化工具回执和任务状态，再从未完成项继续；不得自动重放外部副作用或高风险动作。' : raw.prompt)
+      this.traces.startTurn(runId, { reason: prompt === undefined ? 'resume' : 'user_message', accessMode: raw.accessMode ?? 'approval' })
       const prepared = await this.preparation.prepare({ run: raw, profile, workspace, effectivePrompt })
+      this.traces.recordContextStages(runId, prepared.stageDiagnostics)
       this.database.appendRunEvent(runId, 'context.pipeline_completed', '上下文 Pipeline 已完成', {
         contextStats: prepared.contextStats,
         stages: prepared.stageDiagnostics,
@@ -179,6 +188,7 @@ export class RunCoordinator {
         thinkingLevel: profile.capabilities.reasoning ? 'medium' : 'off',
       })
     } catch (error) {
+      this.traces.finishRun(runId, 'failed', { error: error instanceof Error ? error.message : String(error) })
       this.database.stopRunExecution(runId)
       const current = this.database.getRun(runId)
       if (current && !TERMINAL_RUN_STATUSES.has(current.status)) {
@@ -251,6 +261,7 @@ export class RunCoordinator {
     this.database.cancelPendingRunWork(runId, '任务已暂停；未完成工具和审批已失效')
     this.broker.rejectRunApprovals(runId, '任务已暂停；审批已失效')
     this.clearTransientEventState(runId)
+    this.traces.finishRun(runId, 'cancelled', { reason: 'user_paused' })
     this.emitRun(runId)
     return this.getRun(runId)
   }
@@ -274,6 +285,7 @@ export class RunCoordinator {
     this.database.cancelPendingRunWork(runId, '任务已取消')
     this.broker.rejectRunApprovals(runId)
     this.clearTransientEventState(runId)
+    this.traces.finishRun(runId, 'cancelled', { reason: 'user_cancelled' })
     this.emitRun(runId)
     const cancelled = this.getRun(runId)
     for (const resolve of this.completionWaiters.get(runId) ?? []) resolve(cancelled)
@@ -331,11 +343,13 @@ export class RunCoordinator {
     if (event.type === 'agent.turn') {
       const cumulativeTurns = this.database.incrementRunModelTurns(runId)
       this.database.appendRunEvent(runId, 'agent.turn', `模型回合 ${cumulativeTurns}`, { ...event, cumulativeTurns })
+      this.traces.startModelTurn(runId, cumulativeTurns)
       this.emitRun(runId)
       return
     }
     if (event.type === 'agent.checkpoint') {
       await this.persistContextCheckpoint(runId, event)
+      this.traces.recordCheckpoint(runId, { estimatedTokens: event.estimatedTokens, sourceCount: event.sourceRefs.length, signature: event.signature })
       return
     }
     // Abort/cancel and bridge-disconnect events race with worker event delivery.
@@ -390,11 +404,22 @@ export class RunCoordinator {
       // Pi emits an assistant message for tool-call-only turns. Keep its usage
       // accounting, but do not turn an empty model envelope into a chat bubble.
       if (event.usage) this.database.audit('model', 'completion', '模型回合完成', { actor: 'agent', outcome: 'succeeded', usage: event.usage }, runId)
+      this.traces.finishModelTurn(runId, event.usage, event.errorMessage)
       const content = typeof event.content === 'string' ? event.content : ''
       if (!content.trim()) return
       const messageId = this.database.addMessage(runId, 'assistant', content, { usage: event.usage, stopReason: event.stopReason })
       const message = { id: messageId, runId, role: 'assistant' as const, content: event.content, createdAt: new Date().toISOString() }
       this.emit({ id: randomUUID(), runId, sequence: this.nextSequence(runId), at: new Date().toISOString(), kind: 'message.completed', message })
+      return
+    }
+    if (event.type === 'tool.started') {
+      this.traces.startTool(runId, event.toolCallId, event.toolId)
+      this.database.appendRunEvent(runId, event.type, `开始执行 ${event.toolId}`, event)
+      return
+    }
+    if (event.type === 'tool.finished') {
+      this.traces.finishTool(runId, event.toolCallId, Boolean(event.isError))
+      this.database.appendRunEvent(runId, event.type, `${event.toolId} ${event.isError ? '失败' : '完成'}`, event, event.isError ? 'warning' : 'info')
       return
     }
     if (event.type === 'agent.completed') {
@@ -429,6 +454,7 @@ export class RunCoordinator {
         })
       }
       this.emitRun(runId)
+      this.traces.finishRun(runId, failed ? 'failed' : 'succeeded', { outcome: this.database.getRun(runId)?.outcome ?? null, turns: event.turns })
       this.clearTransientEventState(runId)
       const finished = this.getRun(runId)
       this.notify(failed ? '任务失败' : '任务完成', finished.title)
@@ -442,6 +468,7 @@ export class RunCoordinator {
       this.database.finishRunTurn(runId, 'failed')
       this.database.transitionRun(runId, 'failed', { outcome: null, error: event.error, finishedAt: new Date().toISOString() })
       this.emitRun(runId)
+      this.traces.finishRun(runId, 'failed', { error: event.error })
       this.clearTransientEventState(runId)
       const failed = this.getRun(runId)
       this.notify('任务失败', failed.title)
@@ -463,6 +490,7 @@ export class RunCoordinator {
       : (usageBeforeFinish.activeDurationMs >= limits.maxTotalDurationMs ? 'total' : 'turn'))
     this.database.finishRunTurn(runId, 'budget_exhausted')
     this.database.transitionRun(runId, 'waiting_user', { outcome: null, error: null, finishedAt: null })
+    this.traces.finishRun(runId, 'interrupted', { reason: 'budget_exhausted', budget, scope: resolvedScope })
     this.database.appendRunEvent(runId, 'run.budget_exhausted', message, {
       budget,
       scope: resolvedScope,
@@ -567,6 +595,7 @@ export class RunCoordinator {
       this.runner.cancelRun(runId)
       this.streamingMessageIds.delete(runId)
       this.clearTransientEventState(runId)
+      this.traces.finishRun(runId, 'interrupted', { reason: 'chrome_disconnected' })
       this.emitRun(runId)
     }
     if (paused.runIds.length) this.notify('Chrome 已断开', `${paused.runIds.length} 个使用 Chrome 的任务已等待重新连接。`)
@@ -579,6 +608,7 @@ export class RunCoordinator {
       this.broker.rejectRunApprovals(runId, '执行进程意外退出，审批已失效')
       this.streamingMessageIds.delete(runId)
       this.clearTransientEventState(runId)
+      this.traces.interruptRun(runId, `${workerName}:${reason}`)
       this.emitRun(runId)
     }
     if (recovery.pausedRuns) this.notify('任务已暂停', `${workerName} 意外退出；${recovery.pausedRuns} 个任务可在重启执行进程后继续。`)

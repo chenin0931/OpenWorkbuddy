@@ -320,9 +320,18 @@ export class IpcApi {
       'audit:list': (input) => { let items = this.database.listAudit(input?.limit ?? 100).map(presentAudit); if (input?.runId) items = items.filter((item) => item.runId === input.runId); if (input?.outcome) items = items.filter((item) => item.outcome === input.outcome); return { items } },
       'audit:export-diagnostics': async (input) => {
         const entries = this.database.listAudit().filter((entry) => !input?.runId || entry.run_id === input.runId)
+        const trace = this.database.diagnosticTraceBundle(input?.runId)
+        const bundle = {
+          format: 'openworkbuddy-diagnostics-v2',
+          exportedAt: new Date().toISOString(),
+          auditChain: this.database.verifyAuditChain(),
+          auditEntries: entries,
+          traces: trace.traces,
+          traceSpans: trace.spans,
+        }
         const result = await dialog.showSaveDialog({ title: '导出脱敏诊断包', defaultPath: `on-my-workbuddy-diagnostics-${new Date().toISOString().slice(0, 10)}.json` })
         if (result.canceled || !result.filePath) return null
-        const redacted = redactSecrets(JSON.stringify(entries, null, 2))
+        const redacted = redactSecrets(JSON.stringify(bundle, null, 2))
           .replace(/("(?:api[_-]?key|access[_-]?token|refresh[_-]?token|authorization|cookie|credential|secret|password)"\s*:\s*")[^"]+/gi, '$1REDACTED')
         await writeFile(result.filePath, redacted, { mode: 0o600 })
         return { path: result.filePath, entryCount: entries.length, redacted: true }

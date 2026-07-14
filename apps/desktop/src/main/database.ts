@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 import Database from 'better-sqlite3'
@@ -263,8 +263,36 @@ export class AppDatabase {
         run_id TEXT,
         summary TEXT NOT NULL,
         payload_json TEXT NOT NULL DEFAULT '{}',
+        prev_hash TEXT,
+        entry_hash TEXT,
         created_at TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS run_traces (
+        id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+        root_span_id TEXT NOT NULL,
+        status TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        ended_at TEXT,
+        metadata_json TEXT NOT NULL DEFAULT '{}'
+      );
+      CREATE INDEX IF NOT EXISTS run_traces_run_idx ON run_traces(run_id, started_at DESC);
+      CREATE TABLE IF NOT EXISTS trace_spans (
+        id TEXT PRIMARY KEY,
+        trace_id TEXT NOT NULL REFERENCES run_traces(id) ON DELETE CASCADE,
+        parent_span_id TEXT,
+        kind TEXT NOT NULL,
+        name TEXT NOT NULL,
+        status TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        ended_at TEXT,
+        duration_ms INTEGER,
+        usage_json TEXT,
+        error_json TEXT,
+        attributes_json TEXT NOT NULL DEFAULT '{}',
+        artifact_ids_json TEXT NOT NULL DEFAULT '[]'
+      );
+      CREATE INDEX IF NOT EXISTS trace_spans_trace_idx ON trace_spans(trace_id, started_at);
     `)
 
     this.migrateModelProfileProviderConstraint()
@@ -303,6 +331,9 @@ export class AppDatabase {
       this.db.exec('UPDATE tool_calls SET provider_call_id=id WHERE provider_call_id IS NULL')
     }
     this.db.exec('CREATE INDEX IF NOT EXISTS tool_calls_provider_idx ON tool_calls(run_id, provider_call_id, created_at)')
+    const auditColumns = this.db.pragma('table_info(audit_events)') as Array<{ name: string }>
+    if (!auditColumns.some((column) => column.name === 'prev_hash')) this.db.exec('ALTER TABLE audit_events ADD COLUMN prev_hash TEXT')
+    if (!auditColumns.some((column) => column.name === 'entry_hash')) this.db.exec('ALTER TABLE audit_events ADD COLUMN entry_hash TEXT')
   }
 
   private migrateModelProfileProviderConstraint(): void {
@@ -461,6 +492,8 @@ export class AppDatabase {
         createdAt: approval.created_at,
         resolvedAt: approval.resolved_at ?? undefined,
       })).reverse(),
+      traces: this.listRunTraces(run.id, 20),
+      traceSpans: this.listTraceSpans(run.id, 400),
     }
   }
 
@@ -900,9 +933,117 @@ export class AppDatabase {
   }
 
   audit(category: string, action: string, summary: string, payload: Json = {}, runId?: string): void {
-    this.db.prepare('INSERT INTO audit_events(category,action,run_id,summary,payload_json,created_at) VALUES(?,?,?,?,?,?)').run(category, action, runId ?? null, summary, json(payload), now())
+    const createdAt = now()
+    const last = this.db.prepare('SELECT id,entry_hash FROM audit_events WHERE entry_hash IS NOT NULL ORDER BY id DESC LIMIT 1').get() as { id?: number; entry_hash?: string } | undefined
+    const legacy = this.db.prepare('SELECT MAX(id) AS id FROM audit_events').get() as { id?: number | null }
+    const prevHash = last?.entry_hash ?? `legacy-root:${legacy.id ?? 0}`
+    const canonical = canonicalJson({ category, action, runId: runId ?? null, summary, payload, createdAt })
+    const entryHash = createHash('sha256').update(prevHash).update('\n').update(canonical).digest('hex')
+    this.db.prepare('INSERT INTO audit_events(category,action,run_id,summary,payload_json,prev_hash,entry_hash,created_at) VALUES(?,?,?,?,?,?,?,?)')
+      .run(category, action, runId ?? null, summary, json(payload), prevHash, entryHash, createdAt)
   }
   listAudit(limit = 5000): any[] { return (this.db.prepare('SELECT * FROM audit_events ORDER BY id DESC LIMIT ?').all(limit) as any[]).map((a) => ({ ...a, payload: parse(a.payload_json, {}), createdAt: a.created_at })) }
+
+  verifyAuditChain(limit = 5_000): { valid: boolean; hashedEntries: number; legacyEntries: number; brokenIds: number[] } {
+    const rows = this.db.prepare('SELECT * FROM audit_events ORDER BY id DESC LIMIT ?').all(Math.max(1, Math.min(50_000, limit))) as any[]
+    const brokenIds: number[] = []
+    let hashedEntries = 0
+    let legacyEntries = 0
+    for (const row of rows) {
+      if (!row.entry_hash || !row.prev_hash) { legacyEntries += 1; continue }
+      hashedEntries += 1
+      const payload = parse(row.payload_json, null)
+      const canonical = canonicalJson({ category: row.category, action: row.action, runId: row.run_id ?? null, summary: row.summary, payload, createdAt: row.created_at })
+      const expected = createHash('sha256').update(row.prev_hash).update('\n').update(canonical).digest('hex')
+      if (expected !== row.entry_hash) brokenIds.push(Number(row.id))
+    }
+    return { valid: brokenIds.length === 0, hashedEntries, legacyEntries, brokenIds }
+  }
+
+  createRunTrace(input: { id?: string; runId: string; rootSpanId: string; metadata?: Json }): string {
+    const id = input.id ?? randomUUID()
+    this.db.prepare('INSERT INTO run_traces(id,run_id,root_span_id,status,started_at,metadata_json) VALUES(?,?,?,?,?,?)')
+      .run(id, input.runId, input.rootSpanId, 'running', now(), json(input.metadata ?? {}))
+    return id
+  }
+
+  createTraceSpan(input: { id?: string; traceId: string; parentSpanId?: string; kind: string; name: string; status?: string; attributes?: Json }): string {
+    const id = input.id ?? randomUUID()
+    this.db.prepare(`INSERT INTO trace_spans(id,trace_id,parent_span_id,kind,name,status,started_at,attributes_json)
+      VALUES(?,?,?,?,?,?,?,?)`).run(id, input.traceId, input.parentSpanId ?? null, input.kind, input.name, input.status ?? 'running', now(), json(input.attributes ?? {}))
+    return id
+  }
+
+  finishTraceSpan(id: string, status: string, input: { usage?: Json; error?: Json; attributes?: Json; artifactIds?: string[] } = {}): void {
+    const row = this.db.prepare('SELECT started_at,attributes_json FROM trace_spans WHERE id=?').get(id) as any
+    if (!row) return
+    const endedAt = now()
+    const durationMs = Math.max(0, Date.parse(endedAt) - Date.parse(row.started_at))
+    const previousAttributes = parse<Record<string, unknown>>(row.attributes_json, {})
+    const nextAttributes = input.attributes && typeof input.attributes === 'object' && !Array.isArray(input.attributes) ? input.attributes : {}
+    const attributes = { ...previousAttributes, ...nextAttributes }
+    this.db.prepare(`UPDATE trace_spans SET status=?,ended_at=?,duration_ms=?,usage_json=?,error_json=?,attributes_json=?,artifact_ids_json=? WHERE id=?`)
+      .run(status, endedAt, durationMs, input.usage === undefined ? null : json(input.usage), input.error === undefined ? null : json(input.error), json(attributes), json(input.artifactIds ?? []), id)
+  }
+
+  finishRunTrace(traceId: string, status: string, metadata: Json = {}): void {
+    this.db.transaction(() => {
+      const endedAt = now()
+      this.db.prepare(`UPDATE trace_spans SET status='interrupted',ended_at=?,duration_ms=MAX(0,CAST((julianday(?) - julianday(started_at))*86400000 AS INTEGER))
+        WHERE trace_id=? AND status IN ('running','waiting')`).run(endedAt, endedAt, traceId)
+      this.db.prepare('UPDATE run_traces SET status=?,ended_at=?,metadata_json=? WHERE id=?').run(status, endedAt, json(metadata), traceId)
+    })()
+  }
+
+  interruptOpenTraces(runId?: string): number {
+    const rows = (runId
+      ? this.db.prepare("SELECT id FROM run_traces WHERE run_id=? AND status='running'").all(runId)
+      : this.db.prepare("SELECT id FROM run_traces WHERE status='running'").all()) as Array<{ id: string }>
+    for (const row of rows) this.finishRunTrace(row.id, 'interrupted', { reason: 'application_or_worker_restart' })
+    return rows.length
+  }
+
+  listRunTraces(runId: string, limit = 20): any[] {
+    return (this.db.prepare('SELECT * FROM run_traces WHERE run_id=? ORDER BY started_at DESC LIMIT ?').all(runId, Math.max(1, Math.min(100, limit))) as any[])
+      .map((row) => ({ id: row.id, runId: row.run_id, rootSpanId: row.root_span_id, status: row.status, startedAt: row.started_at, ...(row.ended_at ? { endedAt: row.ended_at } : {}), metadata: parse(row.metadata_json, {}) }))
+  }
+
+  listTraceSpans(runId: string, limit = 400): any[] {
+    return (this.db.prepare(`SELECT span.* FROM trace_spans span JOIN run_traces trace ON trace.id=span.trace_id
+      WHERE trace.run_id=? ORDER BY span.started_at DESC LIMIT ?`).all(runId, Math.max(1, Math.min(2_000, limit))) as any[])
+      .reverse().map((row) => ({
+        id: row.id,
+        traceId: row.trace_id,
+        ...(row.parent_span_id ? { parentSpanId: row.parent_span_id } : {}),
+        kind: row.kind,
+        name: row.name,
+        status: row.status,
+        startedAt: row.started_at,
+        ...(row.ended_at ? { endedAt: row.ended_at } : {}),
+        ...(row.duration_ms !== null ? { durationMs: row.duration_ms } : {}),
+        ...(row.usage_json ? { usage: parse(row.usage_json, {}) } : {}),
+        ...(row.error_json ? { error: parse(row.error_json, {}) } : {}),
+        attributes: parse(row.attributes_json, {}),
+        artifactIds: parse(row.artifact_ids_json, []),
+      }))
+  }
+
+  diagnosticTraceBundle(runId?: string): { traces: any[]; spans: any[] } {
+    if (runId) return { traces: this.listRunTraces(runId, 100), spans: this.listTraceSpans(runId, 2_000) }
+    const traces = (this.db.prepare('SELECT * FROM run_traces ORDER BY started_at DESC LIMIT 200').all() as any[])
+      .map((row) => ({ id: row.id, runId: row.run_id, rootSpanId: row.root_span_id, status: row.status, startedAt: row.started_at, ...(row.ended_at ? { endedAt: row.ended_at } : {}), metadata: parse(row.metadata_json, {}) }))
+    const ids = traces.map((trace) => trace.id)
+    if (!ids.length) return { traces, spans: [] }
+    const placeholders = ids.map(() => '?').join(',')
+    const rows = this.db.prepare(`SELECT * FROM trace_spans WHERE trace_id IN (${placeholders}) ORDER BY started_at DESC LIMIT 5000`).all(...ids) as any[]
+    const spans = rows.reverse().map((row) => ({
+      id: row.id, traceId: row.trace_id, ...(row.parent_span_id ? { parentSpanId: row.parent_span_id } : {}), kind: row.kind, name: row.name,
+      status: row.status, startedAt: row.started_at, ...(row.ended_at ? { endedAt: row.ended_at } : {}), ...(row.duration_ms !== null ? { durationMs: row.duration_ms } : {}),
+      ...(row.usage_json ? { usage: parse(row.usage_json, {}) } : {}), ...(row.error_json ? { error: parse(row.error_json, {}) } : {}),
+      attributes: parse(row.attributes_json, {}), artifactIds: parse(row.artifact_ids_json, []),
+    }))
+    return { traces, spans }
+  }
 
   listRecentToolReceipts(runId: string, limit = 40): any[] {
     const safeLimit = Math.max(1, Math.min(100, Math.trunc(limit)))
@@ -973,8 +1114,7 @@ export class AppDatabase {
         WHERE state IN ('running','waiting_approval') AND run_id IN (${runPlaceholders})`).run(reason, timestamp, ...runIds).changes
       const event = this.db.prepare(`INSERT INTO run_events(run_id,type,level,summary,payload_json,created_at) VALUES(?,?,?,?,?,?)`)
       for (const runId of runIds) event.run(runId, 'chrome.disconnected', 'warning', reason, json({ reason }), timestamp)
-      this.db.prepare(`INSERT INTO audit_events(category,action,run_id,summary,payload_json,created_at) VALUES(?,?,?,?,?,?)`)
-        .run('chrome', 'pause_on_disconnect', null, reason, json({ actor: 'system', outcome: 'succeeded', runIds, expiredApprovals, cancelledToolCalls }), timestamp)
+      this.audit('chrome', 'pause_on_disconnect', reason, { actor: 'system', outcome: 'succeeded', runIds, expiredApprovals, cancelledToolCalls })
       return { runIds, expiredApprovals, cancelledToolCalls }
     })()
   }
@@ -1063,10 +1203,9 @@ export class AppDatabase {
       if (pausedRuns || expiredApprovals || cancelledToolCalls) {
         const event = this.db.prepare(`INSERT INTO run_events(run_id,type,level,summary,payload_json,created_at) VALUES(?,?,?,?,?,?)`)
         for (const runId of runIds) event.run(runId, 'run.recovered', 'warning', reason, json({ reason }), timestamp)
-        this.db.prepare(`INSERT INTO audit_events(category,action,run_id,summary,payload_json,created_at) VALUES(?,?,?,?,?,?)`)
-          .run('lifecycle', 'recover_interrupted_work', null, reason, json({
-            actor: 'system', outcome: 'succeeded', runIds, pausedRuns, expiredApprovals, cancelledToolCalls,
-          }), timestamp)
+        this.audit('lifecycle', 'recover_interrupted_work', reason, {
+          actor: 'system', outcome: 'succeeded', runIds, pausedRuns, expiredApprovals, cancelledToolCalls,
+        })
       }
       return { runIds, pausedRuns, expiredApprovals, cancelledToolCalls }
     })()
