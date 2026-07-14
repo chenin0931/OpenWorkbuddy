@@ -1,18 +1,12 @@
 import type {
   ArtifactItem,
   DiffItem,
-  PlanStepItem,
   SourceItem,
-  ToolActivityItem,
   VerificationCheckItem,
   VerificationView,
 } from './types'
 
 export type AttentionState = 'working' | 'approval' | 'input' | 'paused' | 'failed'
-
-export type ActivityKind = 'files' | 'shell' | 'web' | 'mcp' | 'plan' | 'other'
-
-export type ActivityState = 'running' | 'completed' | 'warning' | 'failed'
 
 export type ProcessStepKind =
   | 'understand'
@@ -72,18 +66,6 @@ export interface AssistantResponseView {
   updatedAt?: string
 }
 
-export interface ActivityGroup {
-  kind: ActivityKind
-  state: ActivityState
-  summary: string
-  count: number
-  eventIds: string[]
-  toolCalls: ToolActivityItem[]
-  steps: PlanStepItem[]
-  startedAt?: string
-  updatedAt?: string
-}
-
 export type ChangeSummary = DiffItem
 export type CheckSummary = VerificationCheckItem
 export type ArtifactSummary = ArtifactItem
@@ -102,7 +84,6 @@ export interface WorkTurnViewModel {
   id: string
   prompt: UserPromptView
   response: AssistantResponseView
-  activity: ActivityGroup[]
   process?: ProcessTimelineViewModel
   result?: ResultEvidence
   attention?: AttentionState

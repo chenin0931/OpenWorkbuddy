@@ -45,6 +45,12 @@ describe('process view model', () => {
     expect(timeline()).toBeUndefined()
   })
 
+  it('shows one live preparation step while an ordinary turn is still running', () => {
+    const process = timeline({ runStatus: 'running' })
+    expect(process).toMatchObject({ state: 'running', headline: '正在分析任务 · 0/1 步' })
+    expect(process?.steps).toMatchObject([{ kind: 'understand', state: 'running', title: '正在分析任务要求' }])
+  })
+
   it('keeps distinct searches and aggregates consecutive source reads', () => {
     const process = timeline({
       tools: [

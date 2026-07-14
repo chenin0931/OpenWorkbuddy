@@ -84,29 +84,12 @@ function safeFailureMessage(detail: RunDetailView): string {
   return raw.length > 180 ? `${raw.slice(0, 179)}…` : raw
 }
 
-function visiblePhase(detail: RunDetailView): string {
-  if (detail.status === 'verifying') return '正在验证结果'
-  const activeSpan = [...detail.traceSpans].reverse().find((span) => span.status === 'running' || span.status === 'waiting')
-  if (activeSpan?.kind === 'tool_call') return /web_|search|fetch/i.test(activeSpan.name) ? '正在检索资料' : '正在执行操作'
-  if (activeSpan?.kind === 'managed_process') return '后台进程正在运行'
-  if (activeSpan?.kind === 'context_stage') return '正在准备上下文'
-  if (activeSpan?.kind === 'checkpoint') return '正在整理上下文'
-  if (activeSpan?.kind === 'verification') return '正在验证结果'
-  if (activeSpan?.kind === 'model_turn') return '正在生成结果'
-  if (detail.status === 'planning' || detail.status === 'understanding') return '正在准备工作'
-  if (detail.progress?.phase === 'executing') return '正在执行操作'
-  if (detail.progress?.phase === 'verifying') return '正在验证结果'
-  return '正在生成结果'
-}
-
 export function WorkTimeline({ detail, approvals, onOpenDetails, onOpenChanges }: WorkTimelineProps) {
   const tailRef = useRef<HTMLDivElement>(null)
   const followTailRef = useRef(true)
   const [openProcessTurnId, setOpenProcessTurnId] = useState<string>()
   const turns = useMemo(() => buildWorkTurns(detail), [detail])
-  const active = ['understanding', 'planning', 'running', 'verifying'].includes(detail.status)
   const selectedProcess = turns.find((turn) => turn.id === openProcessTurnId)?.process
-  const hasVisibleProcess = turns.some((turn) => Boolean(turn.process))
 
   useEffect(() => {
     const scroller = tailRef.current?.closest('.run-scroll')
@@ -148,7 +131,6 @@ export function WorkTimeline({ detail, approvals, onOpenDetails, onOpenChanges }
           </section>
         )
       })}
-      {active && !hasVisibleProcess && <div className="agent-working" role="status" aria-live="polite"><Icon name="activity" size={14} /><span>{visiblePhase(detail)}</span></div>}
       {detail.status === 'failed' && <div className="inline-notice error"><Icon name="warning" /><span>{safeFailureMessage(detail)}</span></div>}
       <div ref={tailRef} className="timeline-tail" aria-hidden="true" />
       <ProcessSheet open={Boolean(selectedProcess)} timeline={selectedProcess} onClose={() => setOpenProcessTurnId(undefined)} />

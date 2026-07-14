@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { EventItem, RunDetailView, ToolActivityItem } from './types'
-import { attentionForRun, buildWorkTurns, classifyToolActivity, isSourceWarning } from './work-turn'
+import { attentionForRun, buildWorkTurns } from './work-turn'
 
 const at = (minute: number) => `2026-07-12T10:${String(minute).padStart(2, '0')}:00.000Z`
 
@@ -55,17 +55,16 @@ describe('WorkTurn view model', () => {
     expect(turns[0]).toMatchObject({
       prompt: { content: '先读取项目' },
       response: { content: '已经找到入口。', messageIds: ['assistant-1', 'assistant-2'] },
-      activity: [{ kind: 'files', state: 'completed', count: 1, summary: '已完成 1 项文件操作', eventIds: ['read-1'] }],
       process: { state: 'succeeded', headline: '2 个步骤' },
     })
     expect(turns[1]).toMatchObject({
       prompt: { content: '再运行测试' },
       response: { content: '测试通过。' },
-      activity: [{ kind: 'shell', state: 'completed', count: 1, summary: '已完成 1 条命令', eventIds: ['shell-1'] }],
+      process: { state: 'succeeded', headline: '3 个步骤' },
     })
   })
 
-  it('coalesces streaming prefixes and groups every activity kind with natural summaries', () => {
+  it('hides in-progress acknowledgements and exposes semantic process steps', () => {
     const turns = buildWorkTurns(detail({
       status: 'running',
       events: [
@@ -89,14 +88,10 @@ describe('WorkTurn view model', () => {
     expect(turns[0]?.response.content).toBe('')
     expect(turns[0]?.attention).toBe('working')
     expect(turns[0]?.process?.headline).toContain('正在')
-    expect(turns[0]?.activity.map(({ kind, state, summary }) => ({ kind, state, summary }))).toEqual([
-      { kind: 'files', state: 'completed', summary: '已完成 2 项文件操作' },
-      { kind: 'shell', state: 'running', summary: '正在处理 1 条命令' },
-      { kind: 'web', state: 'completed', summary: '已完成 1 项网页操作' },
-      { kind: 'mcp', state: 'completed', summary: '已完成 1 项连接操作' },
-      { kind: 'other', state: 'failed', summary: '1 项操作未完成' },
-      { kind: 'plan', state: 'completed', summary: '已完成 1 个计划步骤' },
+    expect(turns[0]?.process?.steps.map((step) => step.kind)).toEqual([
+      'understand', 'plan', 'file', 'write', 'command', 'search', 'connector', 'file',
     ])
+    expect(turns[0]?.process?.state).toBe('running')
   })
 
   it('attaches current verification and result evidence only to the latest turn', () => {
@@ -139,7 +134,7 @@ describe('WorkTurn view model', () => {
     expect(turns[0]).toMatchObject({
       prompt: { id: 'run-1-prompt', content: '读取工作区', messageIds: [] },
       response: { content: '已读取。' },
-      activity: [{ kind: 'files', eventIds: ['read-1'] }],
+      process: { state: 'succeeded' },
     })
   })
 
@@ -161,10 +156,8 @@ describe('WorkTurn view model', () => {
       },
     }))
 
-    expect(turns[0]?.activity).toMatchObject([
-      { kind: 'plan', state: 'completed', summary: '已完成 1 个计划步骤' },
-    ])
-    expect(turns[0]?.activity.some((group) => group.state === 'running')).toBe(false)
+    expect(turns[0]?.process?.steps.find((step) => step.kind === 'plan')?.state).toBe('succeeded')
+    expect(turns[0]?.process?.steps.some((step) => step.state === 'running')).toBe(false)
   })
 
   it('settles a stale running step as failed when the finished run is partial', () => {
@@ -185,10 +178,8 @@ describe('WorkTurn view model', () => {
       },
     }))
 
-    expect(turns[0]?.activity).toMatchObject([
-      { kind: 'plan', state: 'failed', summary: '1 个计划步骤未完成' },
-    ])
-    expect(turns[0]?.activity.some((group) => group.state === 'running')).toBe(false)
+    expect(turns[0]?.process?.steps.find((step) => step.kind === 'plan')?.state).toBe('warning')
+    expect(turns[0]?.process?.steps.some((step) => step.state === 'running')).toBe(false)
   })
 
   it('maps attention states without turning ordinary completion into a status', () => {
@@ -202,24 +193,15 @@ describe('WorkTurn view model', () => {
     expect(attentionForRun('failed')).toBe('failed')
   })
 
-  it('classifies namespaced MCP calls before generic tool patterns', () => {
-    expect(classifyToolActivity(tool('mcp', 'github/create_issue', 1))).toBe('mcp')
-    expect(classifyToolActivity(tool('chrome', 'chrome_navigate', 1))).toBe('web')
-    expect(classifyToolActivity(tool('plan', 'task_step_update', 1))).toBe('plan')
-  })
-
-  it('treats unavailable web sources as warnings without hiding real failures', () => {
+  it('treats unavailable web sources as process warnings without hiding real failures', () => {
     const sourceFailure = tool('web-failed', 'web_fetch', 1, 'failed')
-    expect(isSourceWarning(sourceFailure)).toBe(true)
-    expect(isSourceWarning(tool('write-failed', 'file_write', 2, 'failed'))).toBe(false)
 
     const turns = buildWorkTurns(detail({
       status: 'completed',
       events: [message('user-1', 'user', '调研', 1), message('assistant-1', 'agent', '已整理', 4)],
       toolCalls: [sourceFailure, tool('web-ok', 'web_fetch', 2, 'succeeded')],
     }))
-    expect(turns[0]?.activity).toMatchObject([
-      { kind: 'web', state: 'warning', summary: '已处理 2 项网页操作，部分来源不可用' },
-    ])
+    expect(turns[0]?.process?.state).toBe('warning')
+    expect(turns[0]?.process?.steps.some((step) => step.kind === 'read_web' && step.state === 'warning')).toBe(true)
   })
 })

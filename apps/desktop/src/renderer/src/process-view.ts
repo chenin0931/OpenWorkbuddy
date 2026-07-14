@@ -274,12 +274,14 @@ function totalDuration(steps: ProcessStepViewModel[]): number | undefined {
 }
 
 export function buildProcessTimeline(input: BuildProcessTimelineInput): ProcessTimelineViewModel | undefined {
+  const isActive = input.isLatest && ['understanding', 'planning', 'running', 'verifying'].includes(input.runStatus)
   const operationalSpans = input.traceSpans.filter((span) => ['tool_call', 'approval_wait', 'checkpoint', 'verification', 'managed_process'].includes(span.kind))
   const visibleArtifacts = input.artifacts.filter((artifact) => artifact.kind === 'final_output')
-  const hasOperationalWork = input.tools.length > 0 || input.steps.length > 0 || input.approvals.length > 0 || operationalSpans.length > 0 || (input.isLatest && (visibleArtifacts.length > 0 || Boolean(input.verification)))
+  const hasOperationalWork = isActive || input.tools.length > 0 || input.steps.length > 0 || input.approvals.length > 0 || operationalSpans.length > 0 || (input.isLatest && (visibleArtifacts.length > 0 || Boolean(input.verification)))
   if (!hasOperationalWork) return undefined
 
-  const drafts: DraftStep[] = [baseStep({ id: `${input.turnId}-understand`, kind: 'understand', state: 'succeeded', title: '已分析任务要求', detail: sanitizeProcessText(input.prompt, 120), startedAt: input.startedAt, endedAt: input.startedAt, mergeKey: 'understand' })]
+  const onlyPreparing = isActive && !input.tools.length && !input.steps.length && !input.approvals.length && !operationalSpans.length
+  const drafts: DraftStep[] = [baseStep({ id: `${input.turnId}-understand`, kind: 'understand', state: onlyPreparing ? 'running' : 'succeeded', title: onlyPreparing ? '正在分析任务要求' : '已分析任务要求', detail: sanitizeProcessText(input.prompt, 120), startedAt: input.startedAt, endedAt: onlyPreparing ? undefined : input.startedAt, mergeKey: 'understand' })]
 
   if (input.steps.length) {
     const completed = input.steps.filter((step) => step.status === 'completed').length

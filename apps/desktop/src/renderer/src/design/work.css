@@ -78,8 +78,6 @@
 .result-summary-actions button { height: 28px; padding: 0 8px; color: var(--accent); background: transparent; border-radius: var(--radius-control); font-size: 12px; font-weight: 600; }
 .result-summary-actions button:hover { background: var(--accent-soft); }
 
-.agent-working { display: flex; align-items: center; gap: 8px; margin: 18px 0 0 43px; color: var(--text-secondary); font-size: 12px; }
-.agent-working > svg { color: var(--accent); }
 .timeline > .inline-notice { margin: 18px 0 0 43px; }
 .timeline-tail { height: 1px; }
 

@@ -9,9 +9,6 @@ import type {
 } from './types'
 import { buildProcessTimeline } from './process-view'
 import type {
-  ActivityGroup,
-  ActivityKind,
-  ActivityState,
   AssistantResponseView,
   AttentionState,
   ResultEvidence,
@@ -35,23 +32,6 @@ interface TurnDraft {
   approvals: ApprovalItem[]
   startedAt?: string
   boundaryAt?: number
-}
-
-const TOOL_KIND_PATTERNS: Array<[ActivityKind, RegExp]> = [
-  ['mcp', /^(?:mcp(?:[._:/-]|$))|(?:[^/]+\/[^/]+$)/i],
-  ['plan', /^(?:task_(?:plan|step_update|complete)|plan(?:[._-]|$)|agent_delegate)/i],
-  ['files', /^(?:file(?:[._-]|$)|attachment(?:[._-]|$)|output(?:[._-]|$)|read_file|write_file|edit_file|apply_patch|glob$|grep$|rg$)/i],
-  ['shell', /^(?:shell(?:[._-]|$)|terminal(?:[._-]|$)|exec(?:[._-]|$)|bash$|command(?:[._-]|$))/i],
-  ['web', /^(?:web(?:[._-]|$)|chrome(?:[._-]|$)|browser(?:[._-]|$)|fetch_url$)/i],
-]
-
-const ACTIVITY_NOUNS: Record<ActivityKind, string> = {
-  files: '项文件操作',
-  shell: '条命令',
-  web: '项网页操作',
-  mcp: '项连接操作',
-  plan: '个计划步骤',
-  other: '项操作',
 }
 
 function timestamp(value: unknown): number | undefined {
@@ -160,115 +140,6 @@ function makeResponse(
   }
 }
 
-function toolKind(tool: ToolActivityItem): ActivityKind {
-  const source = text(tool.source)
-  if (source?.toLocaleLowerCase() === 'mcp') return 'mcp'
-  const name = tool.toolName.trim()
-  return TOOL_KIND_PATTERNS.find(([, pattern]) => pattern.test(name))?.[0] ?? 'other'
-}
-
-export function classifyToolActivity(tool: ToolActivityItem): ActivityKind {
-  return toolKind(tool)
-}
-
-export function isSourceWarning(tool: ToolActivityItem): boolean {
-  return (tool.status === 'failed' || tool.status === 'cancelled') && /^(?:web_search|web_fetch)$/.test(tool.toolName)
-}
-
-function toolState(tool: ToolActivityItem): ActivityState {
-  if (isSourceWarning(tool)) return 'warning'
-  if (tool.status === 'failed' || tool.status === 'cancelled') return 'failed'
-  if (tool.status === 'succeeded') return 'completed'
-  return 'running'
-}
-
-function stepState(status: PlanStepItem['status']): ActivityState {
-  if (status === 'failed') return 'failed'
-  if (status === 'completed') return 'completed'
-  return 'running'
-}
-
-function aggregateState(states: ActivityState[]): ActivityState {
-  if (states.includes('failed')) return 'failed'
-  if (states.includes('running')) return 'running'
-  if (states.includes('warning')) return 'warning'
-  return 'completed'
-}
-
-function activitySummary(kind: ActivityKind, state: ActivityState, count: number): string {
-  const quantity = `${count} ${ACTIVITY_NOUNS[kind]}`
-  if (state === 'running') return `正在处理 ${quantity}`
-  if (state === 'failed') return `${quantity}未完成`
-  if (state === 'warning') return `已处理 ${quantity}，部分来源不可用`
-  return `已完成 ${quantity}`
-}
-
-function activityTime(item: ToolActivityItem | PlanStepItem): string | undefined {
-  return 'toolName' in item
-    ? text(item.createdAt) ?? text(item.updatedAt)
-    : text(item.updatedAt) ?? text(item.createdAt)
-}
-
-function buildActivityGroups(tools: ToolActivityItem[], steps: PlanStepItem[]): ActivityGroup[] {
-  const ordered = [
-    ...tools.map((tool, index) => ({
-      kind: toolKind(tool),
-      id: tool.id,
-      state: toolState(tool),
-      tool,
-      index,
-      at: timestamp(activityTime(tool)),
-    })),
-    ...steps.map((step, index) => ({
-      kind: 'plan' as const,
-      id: step.id,
-      state: stepState(step.status),
-      step,
-      index: tools.length + index,
-      at: timestamp(activityTime(step)),
-    })),
-  ].sort((left, right) => {
-    if (left.at !== undefined && right.at !== undefined && left.at !== right.at) return left.at - right.at
-    if (left.at !== undefined && right.at === undefined) return -1
-    if (left.at === undefined && right.at !== undefined) return 1
-    return left.index - right.index
-  })
-
-  const grouped = new Map<ActivityKind, typeof ordered>()
-  for (const item of ordered) {
-    const group = grouped.get(item.kind)
-    if (group) group.push(item)
-    else grouped.set(item.kind, [item])
-  }
-
-  return [...grouped.entries()].map(([kind, items]) => {
-    const state = aggregateState(items.map((item) => item.state))
-    const times = items.map((item) => activityTime('tool' in item ? item.tool : item.step)).filter((value): value is string => Boolean(value))
-    const startedAt = times[0]
-    const updatedAt = times.at(-1)
-    return {
-      kind,
-      state,
-      summary: activitySummary(kind, state, items.length),
-      count: items.length,
-      eventIds: items.map((item) => item.id),
-      toolCalls: items.flatMap((item) => 'tool' in item ? [item.tool] : []),
-      steps: items.flatMap((item) => 'step' in item ? [item.step] : []),
-      ...(startedAt ? { startedAt } : {}),
-      ...(updatedAt ? { updatedAt } : {}),
-    }
-  })
-}
-
-function settleActivityGroups(groups: ActivityGroup[], detail: RunDetailView): ActivityGroup[] {
-  if (detail.status !== 'completed') return groups
-  return groups.map((group) => {
-    if (group.state !== 'running') return group
-    const state: ActivityState = detail.result === 'partial' ? 'failed' : 'completed'
-    return { ...group, state, summary: activitySummary(group.kind, state, group.count) }
-  })
-}
-
 export function attentionForRun(status: RunStatus, hasPendingApproval = false): AttentionState | undefined {
   if (hasPendingApproval || status === 'waiting_approval') return 'approval'
   if (status === 'waiting_user') return 'input'
@@ -280,7 +151,7 @@ export function attentionForRun(status: RunStatus, hasPendingApproval = false): 
 
 function targetTurnIndex(turns: TurnDraft[], value: ToolActivityItem | PlanStepItem): number {
   if (turns.length <= 1) return 0
-  const at = timestamp(activityTime(value))
+  const at = timestamp('toolName' in value ? value.createdAt ?? value.updatedAt : value.updatedAt ?? value.createdAt)
   if (at === undefined) return turns.length - 1
   for (let index = turns.length - 1; index >= 0; index -= 1) {
     const boundary = turns[index]?.boundaryAt
@@ -374,7 +245,6 @@ export function buildWorkTurns(detail: RunDetailView): WorkTurnViewModel[] {
       id: draft.id,
       prompt: draft.prompt,
       response,
-      activity: settleActivityGroups(buildActivityGroups(draft.tools, draft.steps), detail),
       ...(() => {
         const process = buildProcessTimeline({
           turnId: draft.id,
@@ -401,9 +271,6 @@ export function buildWorkTurns(detail: RunDetailView): WorkTurnViewModel[] {
 }
 
 export type {
-  ActivityGroup,
-  ActivityKind,
-  ActivityState,
   AssistantResponseView,
   AttentionState,
   ResultEvidence,
