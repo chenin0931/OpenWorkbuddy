@@ -32,7 +32,9 @@ boundaries rather than a chat wrapper.
 - The access choice is made in each work composer, persists with that work and
   does not create a broad global default. External, destructive and irreversible
   actions stay behind approval in either mode.
-- Shell execution with a strict read-only allowlist and deterministic risk policy.
+- Shell execution with a deterministic risk policy: ordinary categorized
+  commands follow the per-work access mode, while destructive or external side
+  effects still require approval.
 - Cursor-based managed processes for long-running commands, with timeout,
   cancellation, crash interruption and Artifact-backed logs.
 - Web Search and safe Web Fetch with redirect, address and response-size checks.
@@ -43,8 +45,18 @@ boundaries rather than a chat wrapper.
 - Ordered Context Pipeline, provider-neutral tool-receipt integrity checks,
   hierarchical Trace and SHA-256-chained audit entries.
 - Sandboxed Markdown-to-PDF export with automatic output registration.
-- Quiet Workbench UI with grouped work turns, collapsed activity and a persistent
-  artifact shelf for outputs, screenshots and file changes.
+- Quiet Workbench UI with grouped work turns, an inline expandable execution
+  process and a persistent artifact shelf for outputs, screenshots and changes.
+
+### Explainable execution, not hidden chain-of-thought
+
+For work that uses tools, each user message maps to one OpenWorkbuddy response.
+The response contains a compact “execution process” row that expands in place to
+show deterministic summaries such as planning, search, file reads, writes,
+verification and recovery. These steps are derived from persisted Trace spans,
+tool receipts and plan state; they do not expose or fabricate a model's private
+reasoning. Raw parameters, call identifiers and redacted errors stay in the
+secondary Diagnostics view.
 
 ## Architecture
 
