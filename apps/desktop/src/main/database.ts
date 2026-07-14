@@ -918,6 +918,23 @@ export class AppDatabase {
       }))
   }
 
+  /** Durable, redacted-at-the-boundary receipts used to repair provider history. */
+  listToolReceiptsForModel(runId: string, limit = 40): any[] {
+    const safeLimit = Math.max(1, Math.min(100, Math.trunc(limit)))
+    return (this.db.prepare(`SELECT provider_call_id,tool_id,state,risk,result_json,error,created_at,updated_at
+      FROM tool_calls WHERE run_id=? ORDER BY created_at DESC LIMIT ?`).all(runId, safeLimit) as any[])
+      .map((row) => ({
+        providerCallId: row.provider_call_id,
+        toolId: row.tool_id,
+        state: row.state,
+        risk: row.risk,
+        ...(row.result_json !== null ? { result: parse(row.result_json, null) } : {}),
+        ...(row.error ? { error: String(row.error) } : {}),
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+      }))
+  }
+
   cancelPendingRunWork(runId: string, reason: string): { expiredApprovals: number; cancelledToolCalls: number } {
     const timestamp = now()
     return this.db.transaction(() => {

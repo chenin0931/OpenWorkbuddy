@@ -17,6 +17,7 @@ import {
 } from './agent-host-runtime'
 import { compactMessagesWithCheckpoint } from './context-checkpoint'
 import { TextDeltaBuffer } from './event-buffer'
+import { assertModelRequestReady, prepareModelRequestMessages, type DurableToolReceipt } from './model-request-pipeline'
 
 type ProviderName = RuntimeProviderName
 
@@ -39,6 +40,7 @@ interface StartCommand {
   history?: Array<{ role: 'user' | 'assistant'; content: string; timestamp?: number; sourceRef?: string }>
   images?: Array<{ data: string; mimeType: string }>
   tools: ToolDescriptor[]
+  toolReceipts?: DurableToolReceipt[]
   maxTurns?: number
   timeoutMs?: number
   maxParallelReadTools?: number
@@ -220,6 +222,7 @@ async function startRun(command: StartCommand): Promise<void> {
   let turns = 0
   let budgetExhausted = false
   let checkpointState: import('./context-checkpoint').MessageCheckpoint | undefined
+  let lastIntegritySignature = ''
   let turnActive = false
   let lastProgressAt = 0
   let convergenceSteered = false
@@ -264,7 +267,18 @@ async function startRun(command: StartCommand): Promise<void> {
         const { content, sourceRefs, signature, estimatedTokens } = compacted.checkpoint
         send({ type: 'agent.event', runId: command.runId, event: { type: 'agent.checkpoint', content, sourceRefs, signature, estimatedTokens } })
       }
-      return compacted.messages
+      const prepared = prepareModelRequestMessages(
+        compacted.messages,
+        new Set(['capability_load', ...command.tools.map((descriptor) => descriptor.id)]),
+        command.toolReceipts ?? [],
+      )
+      const signature = JSON.stringify(prepared.report)
+      if (signature !== lastIntegritySignature && (prepared.report.removed > 0 || prepared.report.repaired > 0 || prepared.report.blocked > 0 || prepared.report.providerAdjustments > 0)) {
+        lastIntegritySignature = signature
+        send({ type: 'agent.event', runId: command.runId, event: { type: 'agent.request_integrity', ...prepared.report } })
+      }
+      assertModelRequestReady(prepared)
+      return prepared.messages
     },
     // Pi snapshots the active tool array when a prompt run starts. Updating
     // Agent.state from inside capability_load does not alter that in-flight

@@ -118,6 +118,7 @@ export interface PiAgentStartCommand extends WorkerMessageBase {
   history?: Array<{ role: 'user' | 'assistant'; content: string; timestamp?: number; sourceRef?: string }>
   images?: Array<{ data: string; mimeType: string }>
   tools: PiAgentToolDescriptor[]
+  toolReceipts?: Array<{ providerCallId: string; toolId: string; state: string; risk: string; result?: JsonValue; error?: string; createdAt: string; updatedAt: string }>
   maxTurns?: number
   timeoutMs?: number
   maxParallelReadTools?: number
@@ -139,6 +140,7 @@ export type PiAgentEventPayload =
   | { type: 'agent.turn'; turn: number }
   | { type: 'agent.budget_exhausted'; budget: 'model_turns' | 'duration'; message: string; turns: number }
   | { type: 'agent.checkpoint'; content: string; sourceRefs: string[]; signature: string; estimatedTokens: number }
+  | { type: 'agent.request_integrity'; removed: number; repaired: number; blocked: number; providerAdjustments: number; diagnostics: string[] }
   | { type: 'tool.started'; toolCallId: string; toolId: string; args: JsonValue }
   | { type: 'tool.progress'; toolCallId: string; toolId: string; partial: JsonValue }
   | { type: 'tool.finished'; toolCallId: string; toolId: string; isError: boolean }
@@ -264,6 +266,7 @@ const PiAgentEventPayloadSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('agent.turn'), turn: z.number().int().positive() }).strict(),
   z.object({ type: z.literal('agent.budget_exhausted'), budget: z.enum(['model_turns', 'duration']), message: z.string().min(1), turns: z.number().int().nonnegative() }).strict(),
   z.object({ type: z.literal('agent.checkpoint'), content: z.string().min(1), sourceRefs: z.array(z.string().min(1)), signature: z.string().min(1), estimatedTokens: z.number().int().nonnegative() }).strict(),
+  z.object({ type: z.literal('agent.request_integrity'), removed: z.number().int().nonnegative(), repaired: z.number().int().nonnegative(), blocked: z.number().int().nonnegative(), providerAdjustments: z.number().int().nonnegative(), diagnostics: z.array(z.string().max(300)).max(100) }).strict(),
   z.object({ type: z.literal('tool.started'), toolCallId: IdSchema, toolId: IdSchema, args: JsonValueSchema }).strict(),
   z.object({ type: z.literal('tool.progress'), toolCallId: IdSchema, toolId: IdSchema, partial: JsonValueSchema }).strict(),
   z.object({ type: z.literal('tool.finished'), toolCallId: IdSchema, toolId: IdSchema, isError: z.boolean() }).strict(),
@@ -286,6 +289,16 @@ export const PiAgentHostCommandSchema = z.discriminatedUnion('type', [
       history: z.array(z.object({ role: z.enum(['user', 'assistant']), content: z.string(), timestamp: z.number().finite().optional(), sourceRef: z.string().min(1).optional() }).strict()).optional(),
       images: z.array(z.object({ data: z.string(), mimeType: z.string().regex(/^image\//) }).strict()).max(10).optional(),
       tools: z.array(PiAgentToolDescriptorSchema),
+      toolReceipts: z.array(z.object({
+        providerCallId: z.string().min(1),
+        toolId: z.string().min(1),
+        state: z.string().min(1),
+        risk: z.string().min(1),
+        result: JsonValueSchema.optional(),
+        error: z.string().optional(),
+        createdAt: z.string().min(1),
+        updatedAt: z.string().min(1),
+      }).strict()).max(100).optional(),
       maxTurns: z.number().int().min(1).max(1_000).optional(),
       timeoutMs: z.number().int().min(1).optional(),
       maxParallelReadTools: z.number().int().min(1).max(64).optional(),

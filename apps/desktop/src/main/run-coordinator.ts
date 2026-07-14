@@ -1,33 +1,18 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { basename, isAbsolute, join, relative, sep } from 'node:path'
-import { lstat, readFile, realpath } from 'node:fs/promises'
 import type { ModelProfile, RunAccessMode, RunDetail, RunEvent } from '@onmyworkbuddy/contracts'
-import { compileContext, compressContext, renderContextItem } from '@onmyworkbuddy/core'
 import type { AppDatabase } from './database'
 import type { ArtifactStore } from './artifact-store'
 import type { SecretStore } from './secret-store'
 import type { ToolBroker } from './tool-broker'
-import { BASE_SYSTEM_PROMPT, publicToolDescriptors, TOOL_DEFINITIONS } from './tool-registry'
-import { DEFAULT_LIMITS, modelSnapshot, normalizeRunLimits, presentArtifact, presentMemory, presentModel, presentRun, presentRunDetail, presentSkill } from './presenters'
+import { DEFAULT_LIMITS, modelSnapshot, normalizeRunLimits, presentArtifact, presentModel, presentRun, presentRunDetail } from './presenters'
 import type { AgentHostBridge, ToolRunnerBridge } from './worker-bridge'
-import { selectMemoriesForRun } from './memory-selection'
 import { buildDurableCheckpoint } from './context-checkpoint'
+import { RunPreparationPipeline } from './run-preparation-pipeline'
 
-const MAX_RULE_FILE_BYTES = 128 * 1024
-const MAX_RULES_TOTAL_BYTES = 256 * 1024
 const ACTIVE_RUN_STATUSES = new Set(['understanding', 'planning', 'running', 'verifying', 'waiting_approval'])
 const IGNORE_LATE_AGENT_EVENT_STATUSES = new Set(['waiting_user', 'paused', 'completed', 'failed', 'cancelled'])
 const TERMINAL_RUN_STATUSES = new Set(['completed', 'failed', 'cancelled'])
 const STARTABLE_RUN_STATUSES = new Set(['understanding', 'paused', 'waiting_user'])
-
-function isMissingFile(error: unknown): boolean {
-  return Boolean(error && typeof error === 'object' && 'code' in error && (error as { code?: string }).code === 'ENOENT')
-}
-
-function isWithinRoot(root: string, target: string): boolean {
-  const path = relative(root, target)
-  return path === '' || (!isAbsolute(path) && path !== '..' && !path.startsWith(`..${sep}`))
-}
 
 export class RunCoordinator {
   private sequences = new Map<string, number>()
@@ -35,6 +20,7 @@ export class RunCoordinator {
   private completionWaiters = new Map<string, Array<(run: any) => void>>()
   private lastPersistedProgressAt = new Map<string, number>()
   private lastPersistedProgressSignature = new Map<string, string>()
+  private preparation: RunPreparationPipeline
 
   constructor(
     private database: AppDatabase,
@@ -45,7 +31,9 @@ export class RunCoordinator {
     private artifacts: ArtifactStore,
     private broadcast: (event: RunEvent) => void,
     private notify: (title: string, body: string) => void,
-  ) {}
+  ) {
+    this.preparation = new RunPreparationPipeline(database, artifacts, (runId, checkpoint) => this.persistContextCheckpoint(runId, checkpoint))
+  }
 
   emit = (event: RunEvent): void => {
     const persistedEvent = event.kind === 'approval.requested'
@@ -159,18 +147,12 @@ export class RunCoordinator {
       const apiKey = await this.secrets.decrypt(secret.encryptedKey)
       const workspace = this.database.getWorkspace(raw.workspaceId)
       if (!workspace) throw new Error('任务工作区不存在')
-      const systemPrompt = await this.compileSystemPrompt(raw, profile, workspace)
-      const images = await this.loadRunImages(runId)
-      let history = raw.messages
-        .filter((message: any) => (message.role === 'user' || message.role === 'assistant') && (message.role !== 'assistant' || String(message.content ?? '').trim().length > 0))
-        .map((message: any) => ({ role: message.role, content: message.content, timestamp: Date.parse(message.createdAt ?? message.created_at), sourceRef: `message:${message.id}` }))
-      const tools = publicToolDescriptors().filter((tool) => !raw.readOnly || TOOL_DEFINITIONS.find((definition) => definition.id === tool.id)?.risk === 'read')
       const effectivePrompt = prompt ?? (raw.status === 'paused' || raw.status === 'waiting_user' ? '继续此前任务。先核对当前文件、持久化工具回执和任务状态，再从未完成项继续；不得自动重放外部副作用或高风险动作。' : raw.prompt)
-      // createRun/sendMessage persist the current user turn before starting Pi. Pi's
-      // prompt() appends that turn itself, so remove only the matching tail to avoid
-      // presenting the same instruction twice while preserving all earlier history.
-      const last = history.at(-1)
-      if (last?.role === 'user' && last.content === effectivePrompt) history = history.slice(0, -1)
+      const prepared = await this.preparation.prepare({ run: raw, profile, workspace, effectivePrompt })
+      this.database.appendRunEvent(runId, 'context.pipeline_completed', '上下文 Pipeline 已完成', {
+        contextStats: prepared.contextStats,
+        stages: prepared.stageDiagnostics,
+      })
       this.database.transitionRun(runId, 'running', {
         startedAt: raw.startedAt ?? new Date().toISOString(),
         error: null,
@@ -185,10 +167,11 @@ export class RunCoordinator {
         provider: profile.provider,
         modelId: profile.modelId,
         apiKey,
-        systemPrompt,
-        history,
-        ...(images.length ? { images } : {}),
-        tools,
+        systemPrompt: prepared.systemPrompt,
+        history: prepared.history,
+        ...(prepared.images.length ? { images: prepared.images } : {}),
+        tools: prepared.tools,
+        toolReceipts: prepared.toolReceipts,
         maxTurns: remainingTurns,
         timeoutMs: Math.max(1, Math.ceil(remainingDurationMs)),
         maxParallelReadTools: limits.maxParallelReadTools,
@@ -242,7 +225,7 @@ export class RunCoordinator {
     }
     if (attachmentIds.length) this.database.attachArtifactsToRun(runId, attachmentIds)
     this.database.addMessage(runId, 'user', content, attachmentIds.length ? { artifactIds: attachmentIds } : {})
-    const images = await this.loadArtifactsAsImages(attachmentIds)
+    const images = await this.preparation.loadArtifactsAsImages(attachmentIds)
     if (['running', 'planning', 'verifying', 'waiting_approval'].includes(raw.status)) {
       if (raw.outcome === 'verified' || raw.outcome === 'partial') {
         this.database.transitionRun(runId, 'running', { outcome: null, summary: '', error: null, finishedAt: null })
@@ -576,181 +559,6 @@ export class RunCoordinator {
     }
   }
 
-  private async compileSystemPrompt(run: any, profile: ModelProfile, workspace: any): Promise<string> {
-    const files = ['WORKBUDDY.md', 'AGENTS.md', join('.on-my-workbuddy', 'rules.md')]
-    const workspaceRules: Array<{ source: string; content: string }> = []
-    let totalRuleBytes = 0
-    if (workspace.rules?.trim()) {
-      const byteLength = Buffer.byteLength(workspace.rules)
-      if (byteLength <= MAX_RULE_FILE_BYTES && byteLength <= MAX_RULES_TOTAL_BYTES) {
-        workspaceRules.push({ source: 'workspace-settings', content: workspace.rules })
-        totalRuleBytes += byteLength
-      } else {
-        this.database.audit('security', 'workspace_rules_rejected', '工作区设置规则超过上下文大小限制', {
-          actor: 'system', outcome: 'blocked', target: 'workspace-settings', byteLength,
-        }, run.id)
-      }
-    }
-
-    const root = await realpath(workspace.root_path)
-    for (const file of files) {
-      try {
-        let candidate = root
-        // Inspect every component instead of trusting only the final realpath:
-        // a symlinked parent directory is also an authority escape surface.
-        for (const segment of file.split(/[\\/]/).filter(Boolean)) {
-          candidate = join(candidate, segment)
-          const info = await lstat(candidate)
-          if (info.isSymbolicLink()) throw new Error(`规则路径不允许符号链接：${file}`)
-        }
-        const info = await lstat(candidate)
-        if (!info.isFile()) throw new Error(`规则路径不是普通文件：${file}`)
-        if (info.size > MAX_RULE_FILE_BYTES) throw new Error(`规则文件超过 ${MAX_RULE_FILE_BYTES} 字节：${file}`)
-        const resolved = await realpath(candidate)
-        if (!isWithinRoot(root, resolved)) throw new Error(`规则文件超出授权工作区：${file}`)
-        const content = await readFile(resolved)
-        if (content.byteLength > MAX_RULE_FILE_BYTES) throw new Error(`规则文件读取后超过大小限制：${file}`)
-        if (totalRuleBytes + content.byteLength > MAX_RULES_TOTAL_BYTES) throw new Error(`规则文件总量超过 ${MAX_RULES_TOTAL_BYTES} 字节`)
-        workspaceRules.push({ source: file, content: content.toString('utf8') })
-        totalRuleBytes += content.byteLength
-      } catch (error) {
-        if (isMissingFile(error)) continue
-        this.database.audit('security', 'workspace_rule_rejected', `拒绝加载工作区规则 ${file}`, {
-          actor: 'system', outcome: 'blocked', target: file,
-          reason: error instanceof Error ? error.message : String(error),
-        }, run.id)
-      }
-    }
-    const settings = this.database.getSetting<any>('appSettings', {})
-    const memories = settings.memoryEnabled === false
-      ? []
-      : selectMemoriesForRun(this.database.listMemory().map(presentMemory), {
-          runId: run.id,
-          workspaceId: workspace.id,
-          messageBelongsToRun: (messageId, candidateRunId) => this.database.messageBelongsToRun(messageId, candidateRunId),
-        })
-    const skills = this.database.listSkills().filter((skill) => skill.enabled).map((skill) => ({ manifest: presentSkill(skill) }))
-    const progress = [
-      run.summary || '',
-      ...(run.steps ?? []).map((step: any) => `[${step.status}] ${step.title} (step:${step.id})`),
-    ].filter(Boolean).join('\n')
-    const previousCheckpoint = await this.loadPreviousCheckpoint(run)
-    const context = compileContext({
-      platformContract: BASE_SYSTEM_PROMPT,
-      userPreferences: this.database.getSetting<string>('userPreferences', ''),
-      workspaceRules,
-      skills,
-      task: { objective: run.goal ?? run.prompt, ...(progress ? { progress } : {}) },
-      environment: {
-        os: process.platform,
-        arch: process.arch,
-        shell: process.env.SHELL ?? '/bin/zsh',
-        time: new Date().toISOString(),
-        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-        workspace: workspace.root_path,
-        accessMode: run.accessMode ?? 'approval',
-        authorizedRoot: run.accessMode === 'full_disk' ? '/' : workspace.root_path,
-      },
-      memories,
-      ...(previousCheckpoint ? { previousCheckpoint } : {}),
-      untrustedContent: await this.attachmentContextItems(run.id),
-      maxContextTokens: profile.capabilities.contextWindow,
-    })
-    let stablePrefix = context.stablePrefix
-    let dynamicSuffix = context.dynamicSuffix
-    if (context.needsCheckpoint) {
-      const compressed = compressContext(context.items, Math.max(1, Math.floor(profile.capabilities.contextWindow * 0.6)), {
-        checkpointId: `checkpoint-${run.id}`,
-      })
-      const droppedIds = new Set(compressed.droppedItemIds)
-      const sourceRefs = context.items
-        .filter((entry) => droppedIds.has(entry.id))
-        .map((entry) => `${entry.kind}:${entry.source}`)
-      const checkpointContent = compressed.checkpoint?.content
-        ?? `Context crossed the 70% checkpoint threshold. Re-open these sources before relying on omitted detail:\n${sourceRefs.map((source) => `- ${source}`).join('\n')}`
-      const sourceSignature = createHash('sha256').update(JSON.stringify({ checkpointContent, sourceRefs })).digest('hex')
-      await this.persistContextCheckpoint(run.id, {
-        content: checkpointContent,
-        sourceRefs,
-        signature: sourceSignature,
-        estimatedTokens: context.estimatedTokens,
-      })
-      stablePrefix = compressed.items.filter((entry) => entry.stable).map(renderContextItem).join('\n\n')
-      dynamicSuffix = compressed.items.filter((entry) => !entry.stable).map(renderContextItem).join('\n\n')
-    }
-    const receipts = this.compileToolReceiptSection(run.id)
-    return `${stablePrefix}\n\n${dynamicSuffix}${receipts ? `\n\n${receipts}` : ''}`
-  }
-
-  private async loadPreviousCheckpoint(run: any): Promise<any | undefined> {
-    const latest = run.artifacts.find((artifact: any) => artifact.kind === 'checkpoint')
-    if (!latest) return undefined
-    try {
-      const content = (await this.artifacts.read(latest.path)).toString('utf8')
-      return {
-        id: `checkpoint-${latest.id}`,
-        kind: 'checkpoint',
-        content,
-        source: `artifact:${latest.id}`,
-        trusted: true,
-        priority: 980,
-        stable: false,
-        createdAt: latest.createdAt ?? latest.created_at,
-      }
-    } catch (error) {
-      this.database.audit('context', 'checkpoint_read_failed', '无法读取持久化上下文检查点', {
-        actor: 'system', outcome: 'failed', artifactId: latest.id,
-        reason: error instanceof Error ? error.message : String(error),
-      }, run.id)
-      return undefined
-    }
-  }
-
-  private async attachmentContextItems(runId: string): Promise<any[]> {
-    const rows = this.database.listArtifacts(runId).filter((artifact: any) => artifact.kind === 'attachment')
-    const items: any[] = []
-    let totalBytes = 0
-    for (const row of rows) {
-      const mime = String(row.mime ?? '')
-      items.push({
-        id: `attachment-manifest-${row.id}`,
-        kind: 'environment',
-        content: `用户已附加文件。artifactId: ${row.id}\n名称：${row.name}\n媒体类型：${mime || 'application/octet-stream'}\n大小：${row.size} bytes\n需要读取或交给 Shell 时调用 attachment_open({ artifactId: "${row.id}" })；禁止按文件名扫描磁盘。`,
-        source: `attachment-manifest:${row.id}`,
-        trusted: true,
-        priority: 910,
-        stable: false,
-      })
-      const isText = mime.startsWith('text/') || /(?:json|xml|yaml|javascript)/i.test(mime)
-      if (!isText || Number(row.size) > 128 * 1024 || totalBytes + Number(row.size) > 256 * 1024) {
-        items.push({ id: `attachment-meta-${row.id}`, kind: 'untrusted_content', content: `附件 ${row.name} 的内容未以内联文本加载。`, source: `attachment:${row.name}`, trusted: false, priority: 500, stable: false })
-        continue
-      }
-      const content = await readFile(row.path, 'utf8')
-      totalBytes += Buffer.byteLength(content)
-      items.push({ id: `attachment-${row.id}`, kind: 'untrusted_content', content, source: `attachment:${row.name}`, trusted: false, priority: 650, stable: false })
-    }
-    return items
-  }
-
-  private async loadRunImages(runId: string): Promise<Array<{ data: string; mimeType: string }>> {
-    return this.loadArtifactsAsImages(this.database.listArtifacts(runId).filter((artifact: any) => artifact.kind === 'attachment' && String(artifact.mime).startsWith('image/')).map((artifact: any) => String(artifact.id)))
-  }
-
-  private async loadArtifactsAsImages(ids: string[]): Promise<Array<{ data: string; mimeType: string }>> {
-    const images: Array<{ data: string; mimeType: string }> = []
-    let totalBytes = 0
-    for (const id of ids.slice(0, 10)) {
-      const row = this.database.getArtifact(id)
-      if (!row || row.kind !== 'attachment' || !String(row.mime).startsWith('image/')) continue
-      if (Number(row.size) > 10 * 1024 * 1024 || totalBytes + Number(row.size) > 20 * 1024 * 1024) continue
-      const data = await readFile(row.path)
-      totalBytes += data.byteLength
-      images.push({ data: data.toString('base64'), mimeType: String(row.mime) })
-    }
-    return images
-  }
-
   handleChromeDisconnect(reason = 'Chrome Bridge 已断开，请重新连接后继续'): ReturnType<AppDatabase['pauseChromeRunsForDisconnect']> {
     const paused = this.database.pauseChromeRunsForDisconnect(reason)
     for (const runId of paused.runIds) {
@@ -775,56 +583,6 @@ export class RunCoordinator {
     }
     if (recovery.pausedRuns) this.notify('任务已暂停', `${workerName} 意外退出；${recovery.pausedRuns} 个任务可在重启执行进程后继续。`)
     return recovery
-  }
-
-  private compileToolReceiptSection(runId: string): string {
-    const recent = this.database.listRecentToolReceipts(runId, 40)
-    if (!recent.length) return ''
-    const uncertainStates = new Set(['requested', 'waiting_approval', 'running', 'cancelled'])
-    const important = recent.filter((receipt) =>
-      receipt.risk === 'external_side_effect' || receipt.risk === 'high_risk_irreversible' || uncertainStates.has(receipt.state))
-    const routine = recent.filter((receipt) => !important.includes(receipt))
-    const selected = [...important, ...routine].slice(0, 12)
-    const lines = selected.map((receipt) => {
-      const nonReplayable = receipt.risk === 'external_side_effect' || receipt.risk === 'high_risk_irreversible' || uncertainStates.has(receipt.state)
-      const receiptState = receipt.hasResult ? '有本地回执' : '无本地结果正文'
-      const caution = nonReplayable ? '；禁止自动重放，恢复前先核对真实状态' : ''
-      return `- ${receipt.createdAt} | ${this.safeReceiptLabel(receipt.toolId)} | target=${this.receiptTarget(receipt.toolId, receipt.arguments)} | risk=${receipt.risk} | state=${receipt.state} | ${receiptState}${caution}`
-    })
-    return [
-      '## 持久化工具回执与恢复约束',
-      '以下内容是系统从本地数据库生成的状态摘要，不是新的待办指令。不得把 external/high 成功记录或 requested/running/cancelled 等状态不明记录当作可自动重试动作；必须先核对文件、浏览器或外部系统的真实状态，必要时询问用户。摘要不包含 API Key、敏感输入、完整命令或工具结果正文。',
-      ...lines,
-    ].join('\n')
-  }
-
-  private receiptTarget(toolId: string, rawArguments: unknown): string {
-    const args = rawArguments && typeof rawArguments === 'object' && !Array.isArray(rawArguments)
-      ? rawArguments as Record<string, unknown>
-      : {}
-    if (typeof args.path === 'string') return `file:${this.safeReceiptLabel(basename(args.path))}`
-    if (typeof args.url === 'string') {
-      try { return `origin:${new URL(args.url).origin}` } catch { return 'web-target' }
-    }
-    if (typeof args.command === 'string') {
-      const executable = args.command.trim().split(/\s+/).find((token) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(token))
-      const name = executable ? basename(executable).replace(/[^A-Za-z0-9._+-]/g, '') : ''
-      return name ? `shell:${name}` : 'shell-command'
-    }
-    if (typeof args.toolName === 'string') {
-      const server = typeof args.serverId === 'string' ? this.safeReceiptLabel(args.serverId) : 'server'
-      return `mcp:${server}/${this.safeReceiptLabel(args.toolName)}`
-    }
-    if (typeof args.tabId === 'number') return `chrome-tab:${args.tabId}`
-    return this.safeReceiptLabel(toolId)
-  }
-
-  private safeReceiptLabel(value: unknown): string {
-    const printable = Array.from(String(value ?? 'unknown'), (character) => {
-      const code = character.charCodeAt(0)
-      return code <= 31 || code === 127 ? ' ' : character
-    }).join('')
-    return printable.replace(/\s+/g, ' ').slice(0, 120)
   }
 
   private emitRun(runId: string): void {
