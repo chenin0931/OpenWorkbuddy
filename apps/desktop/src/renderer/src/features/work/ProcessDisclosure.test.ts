@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import type { ProcessStepKind, ProcessTimelineViewModel } from '../../work-turn.types'
 import { ProcessIcon } from './ProcessIcon'
-import { ProcessTimeline, ProcessTrigger } from './ProcessSheet'
+import { ProcessDisclosure, ProcessTimeline } from './ProcessDisclosure'
 
 const kinds: ProcessStepKind[] = ['understand', 'plan', 'search', 'read_web', 'browser', 'file', 'command', 'connector', 'write', 'output', 'verify', 'approval', 'recovery', 'complete']
 
@@ -29,10 +29,18 @@ describe('process UI primitives', () => {
     expect(new Set(markup).size).toBe(14)
   })
 
-  it('renders a compact accessible trigger and semantic timeline without diagnostic ids', () => {
-    const trigger = renderToStaticMarkup(createElement(ProcessTrigger, { timeline, onOpen: () => undefined }))
+  it('renders the execution process inline without modal semantics or diagnostic ids', () => {
+    const collapsed = renderToStaticMarkup(createElement(ProcessDisclosure, { timeline, open: false, onToggle: () => undefined }))
+    const expanded = renderToStaticMarkup(createElement(ProcessDisclosure, { timeline, open: true, onToggle: () => undefined }))
     const list = renderToStaticMarkup(createElement(ProcessTimeline, { timeline }))
-    expect(trigger).toContain('查看执行过程：4 个步骤')
+    expect(collapsed).toContain('查看执行过程：4 个步骤')
+    expect(collapsed).toContain('aria-expanded="false"')
+    expect(collapsed).not.toContain('process-inline-panel')
+    expect(expanded).toContain('收起执行过程：4 个步骤')
+    expect(expanded).toContain('aria-expanded="true"')
+    expect(expanded).toContain('process-inline-panel')
+    expect(expanded).not.toContain('role="dialog"')
+    expect(expanded).not.toContain('aria-modal')
     expect(list).toContain('<ol')
     expect(list).toContain('搜索了“今日新闻”')
     expect(list).toContain('example.com')

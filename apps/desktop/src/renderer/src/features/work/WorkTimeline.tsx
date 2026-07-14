@@ -4,7 +4,7 @@ import remarkGfm from 'remark-gfm'
 import { BrandMark, Icon } from '../../icons'
 import type { JsonRecord, RunDetailView } from '../../types'
 import { buildWorkTurns, type ResultEvidence } from '../../work-turn'
-import { ProcessSheet, ProcessTrigger } from './ProcessSheet'
+import { ProcessDisclosure } from './ProcessDisclosure'
 
 interface WorkTimelineProps {
   detail: RunDetailView
@@ -89,7 +89,6 @@ export function WorkTimeline({ detail, approvals, onOpenDetails, onOpenChanges }
   const followTailRef = useRef(true)
   const [openProcessTurnId, setOpenProcessTurnId] = useState<string>()
   const turns = useMemo(() => buildWorkTurns(detail), [detail])
-  const selectedProcess = turns.find((turn) => turn.id === openProcessTurnId)?.process
 
   useEffect(() => {
     const scroller = tailRef.current?.closest('.run-scroll')
@@ -121,7 +120,13 @@ export function WorkTimeline({ detail, approvals, onOpenDetails, onOpenChanges }
               <div className="message-content">
                 <div className="message-meta"><strong>OpenWorkbuddy</strong><span>{formatTime(turn.response.updatedAt ?? turn.updatedAt)}</span></div>
                 <div className="agent-turn-entries">
-                  {turn.process && <ProcessTrigger timeline={turn.process} onOpen={() => setOpenProcessTurnId(turn.id)} />}
+                  {turn.process && (
+                    <ProcessDisclosure
+                      timeline={turn.process}
+                      open={openProcessTurnId === turn.id}
+                      onToggle={() => setOpenProcessTurnId((current) => current === turn.id ? undefined : turn.id)}
+                    />
+                  )}
                   {turn.response.content && <div className="agent-turn-text"><Markdown>{turn.response.content}</Markdown></div>}
                   {turn.result && <ResultSummary result={turn.result} onOpenDetails={onOpenDetails} onOpenChanges={onOpenChanges} />}
                 </div>
@@ -133,7 +138,6 @@ export function WorkTimeline({ detail, approvals, onOpenDetails, onOpenChanges }
       })}
       {detail.status === 'failed' && <div className="inline-notice error"><Icon name="warning" /><span>{safeFailureMessage(detail)}</span></div>}
       <div ref={tailRef} className="timeline-tail" aria-hidden="true" />
-      <ProcessSheet open={Boolean(selectedProcess)} timeline={selectedProcess} onClose={() => setOpenProcessTurnId(undefined)} />
     </div>
   )
 }
