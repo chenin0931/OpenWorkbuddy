@@ -536,11 +536,12 @@ const syncDirectory = async (directory: string): Promise<void> => {
   }
 }
 
-const writeTemporaryFile = async (target: string, content: string, mode: number): Promise<string> => {
+const writeTemporaryFile = async (target: string, content: string | Buffer, mode: number): Promise<string> => {
   const temp = temporaryPath(target)
   const handle = await open(temp, 'wx', mode)
   try {
-    await handle.writeFile(content, 'utf8')
+    if (typeof content === 'string') await handle.writeFile(content, 'utf8')
+    else await handle.writeFile(content)
     await handle.chmod(mode)
     await handle.sync()
   } catch (error) {
@@ -569,7 +570,7 @@ const replaceExistingAtomically = async (target: string, content: string, expect
   return { before: initial.content.toString('utf8'), beforeSha256: expected, sha256: sha256(content) }
 }
 
-const createFileExclusively = async (target: string, content: string): Promise<void> => {
+const createFileExclusively = async (target: string, content: string | Buffer): Promise<void> => {
   const parent = dirname(target)
   const realParent = await realpath(parent)
   if (join(realParent, basename(target)) !== target) throw Object.assign(new Error('目标父目录已变化，请重试'), { code: 'STALE_WRITE' })
@@ -610,6 +611,35 @@ export async function writeFileSafely(rootInput: string | undefined, pathInput: 
 
   const replaced = await replaceExistingAtomically(target, content, expectedSha256)
   return { path: target, before: replaced.before, after: content, beforeSha256: replaced.beforeSha256, sha256: replaced.sha256, created: false }
+}
+
+export async function writeBinaryFileSafely(rootInput: string | undefined, pathInput: string, content: Buffer, expectedSha256?: unknown, relativeBaseInput?: string): Promise<Record<string, unknown>> {
+  const { target } = await resolveAuthorizedPath(rootInput, pathInput, true, relativeBaseInput)
+  let initial: { content: Buffer; mode: number } | undefined
+  try {
+    const info = await lstat(target)
+    if (!info.isFile()) throw new Error('目标不是普通文件')
+    const expected = assertExpectedHash(expectedSha256)
+    initial = await currentRegularFile(target, expected)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+  }
+  if (!initial) {
+    if (expectedSha256 !== undefined && expectedSha256 !== null) throw Object.assign(new Error('预期修改的文件已不存在，请重新读取'), { code: 'STALE_WRITE' })
+    await createFileExclusively(target, content)
+    return { path: target, beforeSha256: null, sha256: sha256(content), size: content.byteLength, created: true }
+  }
+  const expected = assertExpectedHash(expectedSha256)
+  const temp = await writeTemporaryFile(target, content, initial.mode)
+  try {
+    await currentRegularFile(target, expected)
+    await rename(temp, target)
+    await syncDirectory(dirname(target))
+  } catch (error) {
+    await unlink(temp).catch(() => {})
+    throw error
+  }
+  return { path: target, beforeSha256: expected, sha256: sha256(content), size: content.byteLength, created: false }
 }
 
 export async function replaceFileTextSafely(

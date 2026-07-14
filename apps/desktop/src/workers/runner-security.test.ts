@@ -19,9 +19,11 @@ import {
   safeWebSearch,
   trashFileSafely,
   writeFileSafely,
+  writeBinaryFileSafely,
 } from './runner-security'
 
 const digest = (value: string): string => createHash('sha256').update(value).digest('hex')
+const digestBuffer = (value: Buffer): string => createHash('sha256').update(value).digest('hex')
 const temporaryRoots: string[] = []
 
 const workspace = async (): Promise<string> => {
@@ -235,6 +237,17 @@ describe('stale-safe atomic file mutation', () => {
     expect(await readFile(target, 'utf8')).toBe('after')
     expect((await stat(target)).mode & 0o777).toBe(0o640)
     expect((await readdir(root)).filter((name) => name.endsWith('.tmp'))).toEqual([])
+  })
+
+  it('writes binary outputs with the same stale-write guarantees', async () => {
+    const root = await workspace()
+    const first = Buffer.from('%PDF-1.7\nfirst\0binary')
+    const second = Buffer.from('%PDF-1.7\nsecond\0binary')
+    await writeBinaryFileSafely(root, 'report.pdf', first)
+    await expect(writeBinaryFileSafely(root, 'report.pdf', second)).rejects.toMatchObject({ code: 'EXPECTED_HASH_REQUIRED' })
+    const result = await writeBinaryFileSafely(root, 'report.pdf', second, digestBuffer(first))
+    expect(result).toMatchObject({ sha256: digestBuffer(second), size: second.byteLength, created: false })
+    expect(await readFile(join(root, 'report.pdf'))).toEqual(second)
   })
 
   it('refuses stale changes and creates a new file exclusively under contention', async () => {

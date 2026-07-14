@@ -1,0 +1,4 @@
+interface:
+  display_name: "文档导出"
+  short_description: "把 Markdown 报告稳定导出并验证为 PDF 产物"
+  default_prompt: "Use $document-export to render the Markdown deliverable as a verified PDF output."

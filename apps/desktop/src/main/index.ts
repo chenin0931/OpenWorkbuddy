@@ -15,6 +15,7 @@ import { IpcApi } from './ipc-api'
 import { McpOAuthService, type McpOAuthStoredSecret } from './mcp-oauth'
 import { createRendererNavigationPolicy, isRendererNavigationAllowed } from './navigation-policy'
 import { migrateLegacyBrandDirectory } from './brand-migration'
+import { DocumentRenderService } from './document-render-service'
 
 app.setName('OpenWorkbuddy')
 const hasLock = app.requestSingleInstanceLock()
@@ -132,6 +133,7 @@ async function initialize(): Promise<void> {
     notify('任务已恢复为暂停状态', `${startupRecovery.pausedRuns} 个未完成任务可从原记录继续。`)
   }
   const oauthRef: { current?: McpOAuthService } = {}
+  const documentRenderer = new DocumentRenderService(runner, artifacts)
   const broker = new ToolBroker(
     database,
     runner,
@@ -144,6 +146,7 @@ async function initialize(): Promise<void> {
       if (!oauthRef.current) throw new Error('MCP OAuth 服务尚未初始化')
       await oauthRef.current.refreshOAuthIfNeeded(serverId, serverUrl)
     },
+    documentRenderer,
   )
   const coordinator = new RunCoordinator(database, secrets, host, runner, broker, artifacts, broadcast, notify)
   coordinatorRef.current = coordinator
@@ -162,15 +165,17 @@ async function initialize(): Promise<void> {
   app.on('child-process-gone', workerFailureHandler)
   const skills = new SkillService(database, join(userData, 'skills'))
   await skills.scan()
-  const bundledDataAnalysisSkill = app.isPackaged
-    ? join(process.resourcesPath, 'BundledSkills', 'data-analysis')
-    : join(app.getAppPath(), 'resources', 'skills', 'data-analysis')
-  if (!(await skills.list()).some((skill) => skill.name === 'data-analysis')) {
+  const installedSkillNames = new Set((await skills.list()).map((skill) => skill.name))
+  for (const skillName of ['data-analysis', 'document-export']) {
+    if (installedSkillNames.has(skillName)) continue
+    const bundledSkill = app.isPackaged
+      ? join(process.resourcesPath, 'BundledSkills', skillName)
+      : join(app.getAppPath(), 'resources', 'skills', skillName)
     try {
-      await skills.importDirectory(bundledDataAnalysisSkill)
+      await skills.importDirectory(bundledSkill)
     } catch (error) {
-      database.audit('skill', 'install_bundled', '内置数据分析 Skill 安装失败', {
-        actor: 'system', outcome: 'failed', target: bundledDataAnalysisSkill,
+      database.audit('skill', 'install_bundled', `内置 ${skillName} Skill 安装失败`, {
+        actor: 'system', outcome: 'failed', target: bundledSkill,
         error: error instanceof Error ? error.message : String(error),
       })
     }

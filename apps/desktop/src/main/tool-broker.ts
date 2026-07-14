@@ -11,6 +11,7 @@ import type { SecretStore } from './secret-store'
 import { TOOL_DEFINITIONS, type ToolDefinition } from './tool-registry'
 import { assertToolArguments } from './tool-argument-validator'
 import type { ToolRunnerBridge } from './worker-bridge'
+import type { DocumentRenderService } from './document-render-service'
 
 interface PendingApproval {
   approval: ApprovalRequest
@@ -24,6 +25,7 @@ interface PendingApproval {
 const sourceFor = (id: string): ToolDescriptor['source'] => id.startsWith('chrome_') ? 'chrome' : id.startsWith('mcp_') ? 'mcp' : 'builtin'
 const policyName = (id: string): string => ({
   file_list: 'file.list', file_read: 'file.read', file_search: 'file.search', attachment_open: 'attachment.open', output_register: 'output.register', file_write: 'file.write', file_draft_start: 'file.stage', file_draft_append: 'file.stage', file_draft_commit: 'file.write', file_replace: 'file.edit', file_delete: 'file.delete',
+  document_render: 'document.render',
   shell_run: 'shell.command', web_search: 'web.search', web_fetch: 'web.fetch', mcp_list_tools: 'mcp.list', mcp_call_tool: 'mcp.call', skill_read: 'skill.read', memory_propose: 'memory.propose',
   task_plan: 'task.plan', task_complete: 'task.complete', agent_delegate: 'agent.delegate', chrome_tabs: 'chrome.read', chrome_snapshot: 'chrome.read_dom',
   chrome_screenshot: 'chrome.screenshot', chrome_navigate: 'chrome.navigate', chrome_click: 'chrome.click', chrome_type: 'chrome.input_sensitive', chrome_open_tab: 'chrome.navigate',
@@ -105,7 +107,7 @@ const MEMORY_KIND_MAP: Record<string, MemoryEntry['type']> = {
 
 const TOOL_STATUSES = new Set<ToolCall['status']>(['requested', 'waiting_approval', 'running', 'succeeded', 'failed', 'cancelled'])
 const STEP_STATUSES = new Set<TaskStep['status']>(['pending', 'in_progress', 'blocked', 'completed', 'failed', 'skipped'])
-const FILE_MUTATION_TOOLS = new Set(['file_write', 'file_draft_commit', 'file_replace', 'file_delete'])
+const FILE_MUTATION_TOOLS = new Set(['file_write', 'file_draft_commit', 'file_replace', 'file_delete', 'document_render'])
 const MAX_FILE_DRAFT_CHARS = 2 * 1024 * 1024
 const MAX_UNIQUE_SEARCHES_PER_TURN = 10
 const PUBLIC_SKILL_ROOT_FILES = new Set(['SKILL.md', 'README.md', 'LICENSE', 'LICENSE.md', 'NOTICE', 'NOTICE.md'])
@@ -163,6 +165,7 @@ export class ToolBroker {
     private emit: (event: RunEvent) => void,
     private delegate: (input: { parentRunId: string; task: string; role: string }) => Promise<unknown>,
     private refreshMcpOAuth?: (serverId: string, serverUrl: string) => Promise<void>,
+    private documentRenderer?: DocumentRenderService,
   ) {}
 
   /**
@@ -223,7 +226,7 @@ export class ToolBroker {
     // receipt id while keeping the original id for model and approval semantics.
     const receiptId = this.database.createToolCall({ providerCallId: call.id, runId: call.runId, toolId: input.toolId, risk: decision.riskLevel, arguments: providerCall.arguments })
     const receiptCall: ToolCall = { ...providerCall, id: receiptId }
-    const rawTarget = String(input.args.path ?? input.args.url ?? input.args.query ?? input.args.command ?? input.toolId)
+    const rawTarget = String(input.args.path ?? input.args.outputPath ?? input.args.inputPath ?? input.args.url ?? input.args.query ?? input.args.command ?? input.toolId)
     const searchShortcut = input.toolId === 'web_search' ? this.searchShortcut(input.runId, input.args) : undefined
     if (searchShortcut) {
       this.database.audit('tool', input.toolId, `Agent 请求 ${tool.label}`, { actor: 'agent', outcome: 'allow', riskLevel: 'readonly', target: redactValue(rawTarget, 'target') as string, shortcut: searchShortcut.kind }, input.runId)
@@ -304,11 +307,15 @@ export class ToolBroker {
   }
 
   private async acquireFileLease(run: any, tool: ToolDefinition, args: Record<string, unknown>): Promise<() => void> {
-    if (!FILE_MUTATION_TOOLS.has(tool.id) || typeof args.path !== 'string') return () => undefined
+    if (!FILE_MUTATION_TOOLS.has(tool.id)) return () => undefined
     const workspace = this.database.getWorkspace(run.workspaceId ?? run.workspace_id)
     if (!workspace?.root_path) throw Object.assign(new Error('任务工作区不存在或已被移除'), { code: 'WORKSPACE_REQUIRED' })
     const root = String(workspace.root_path)
-    const absolute = resolve(root, args.path).normalize('NFC')
+    const requestedPath = tool.id === 'document_render'
+      ? String(args.outputPath ?? `${String(args.inputPath).replace(/\.md$/i, '')}.pdf`)
+      : typeof args.path === 'string' ? args.path : undefined
+    if (!requestedPath) return () => undefined
+    const absolute = resolve(root, requestedPath).normalize('NFC')
     const key = process.platform === 'darwin' ? absolute.toLocaleLowerCase('en-US') : absolute
     const previous = this.fileLeaseTails.get(key) ?? Promise.resolve()
     let unlock!: () => void
@@ -477,6 +484,19 @@ export class ToolBroker {
     const authorizedRoot = run.accessMode === 'full_disk' ? '/' : workspace.root_path
     if (tool.id === 'output_register') {
       return this.registerOutputs(runId, workspace.root_path, authorizedRoot, Array.isArray(args.outputs) ? args.outputs as Array<{ path: string; label?: string }> : [])
+    }
+    if (tool.id === 'document_render') {
+      if (!this.documentRenderer) throw Object.assign(new Error('文档渲染服务不可用'), { code: 'DOCUMENT_RENDERER_UNAVAILABLE' })
+      const rendered = await this.documentRenderer.render({
+        runId,
+        inputPath: String(args.inputPath),
+        ...(typeof args.outputPath === 'string' && args.outputPath.trim() ? { outputPath: args.outputPath } : {}),
+        ...(typeof args.title === 'string' && args.title.trim() ? { title: args.title } : {}),
+        workspacePath: workspace.root_path,
+        authorizedRoot,
+      })
+      const outputs = await this.registerOutputs(runId, workspace.root_path, authorizedRoot, [{ path: rendered.outputPath, label: basename(rendered.outputPath) }])
+      return { ...rendered, outputs: outputs.outputs }
     }
     if (tool.id === 'file_draft_commit') {
       const draftId = String(args.draftId)

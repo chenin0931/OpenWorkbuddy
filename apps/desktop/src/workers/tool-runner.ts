@@ -18,6 +18,7 @@ import {
   safeWebSearch,
   trashFileSafely,
   writeFileSafely,
+  writeBinaryFileSafely,
 } from './runner-security'
 
 type Command = ToolRunnerCommand
@@ -33,6 +34,7 @@ type CachedMcpConnection = McpClientEntry & { close(): Promise<void> }
 const mcpConnections = new FingerprintedConnectionCache<CachedMcpConnection>()
 const MAX_TEXT = 2 * 1024 * 1024
 const MAX_PROCESS_OUTPUT_BYTES = 128 * 1024
+const MAX_BINARY_BYTES = 50 * 1024 * 1024
 const SEARCH_EXCLUDED_DIRECTORIES = new Set(['.git', 'node_modules', 'dist', 'build', 'out', 'outputs', 'target'])
 
 export async function searchFilesFallback(root: string, query: string, limit = 500): Promise<Record<string, unknown>> {
@@ -204,6 +206,14 @@ async function execute(command: Extract<Command, { type: 'execute' }>): Promise<
       const content = await readFile(target, 'utf8')
       return { path: target, content, sha256: hash(content), mtimeMs: info.mtimeMs, size: info.size }
     }
+    case 'file.read_binary': {
+      const { target } = await resolveAuthorizedPath(authorizationRoot, args.path, false, workspacePath)
+      const info = await stat(target)
+      if (!info.isFile()) throw new Error('目标不是文件')
+      if (info.size > MAX_BINARY_BYTES) throw Object.assign(new Error('二进制文件超过 50 MB'), { code: 'BINARY_TOO_LARGE' })
+      const data = await readFile(target)
+      return { path: target, data: data.toString('base64'), sha256: hash(data), mtimeMs: info.mtimeMs, size: info.size }
+    }
     case 'file.search': {
       const { target } = await resolveAuthorizedPath(authorizationRoot, args.path ?? '.', false, workspacePath)
       const rgArgs = ['--json', '--hidden', '--glob', '!.git/**', '--glob', '!node_modules/**', String(args.query), target]
@@ -216,6 +226,12 @@ async function execute(command: Extract<Command, { type: 'execute' }>): Promise<
     }
     case 'file.write': {
       return writeFileSafely(authorizationRoot, String(args.path), String(args.content), args.expectedSha256, workspacePath)
+    }
+    case 'file.write_binary': {
+      if (typeof args.data !== 'string') throw new Error('file.write_binary 缺少 Base64 数据')
+      const data = Buffer.from(args.data, 'base64')
+      if (data.byteLength > MAX_BINARY_BYTES) throw Object.assign(new Error('二进制文件超过 50 MB'), { code: 'BINARY_TOO_LARGE' })
+      return writeBinaryFileSafely(authorizationRoot, String(args.path), data, args.expectedSha256, workspacePath)
     }
     case 'file.replace': {
       return replaceFileTextSafely(authorizationRoot, String(args.path), String(args.oldText), String(args.newText), Boolean(args.replaceAll), args.expectedSha256, workspacePath)
