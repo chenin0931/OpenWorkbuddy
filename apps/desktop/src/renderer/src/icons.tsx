@@ -1,3 +1,4 @@
+import React from 'react'
 import { ArrowClockwiseIcon as ArrowClockwise } from '@phosphor-icons/react/ArrowClockwise'
 import { ArrowRightIcon as ArrowRight } from '@phosphor-icons/react/ArrowRight'
 import { ArrowSquareOutIcon as ArrowSquareOut } from '@phosphor-icons/react/ArrowSquareOut'

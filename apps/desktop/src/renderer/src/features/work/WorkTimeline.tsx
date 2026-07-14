@@ -1,32 +1,16 @@
-import { useEffect, useMemo, useRef, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { BrandMark, Icon } from '../../icons'
-import type { JsonRecord, RunDetailView, ToolActivityItem } from '../../types'
-import { buildWorkTurns, isSourceWarning, type ActivityGroup, type ResultEvidence } from '../../work-turn'
+import type { JsonRecord, RunDetailView } from '../../types'
+import { buildWorkTurns, type ResultEvidence } from '../../work-turn'
+import { ProcessSheet, ProcessTrigger } from './ProcessSheet'
 
 interface WorkTimelineProps {
   detail: RunDetailView
   approvals?: ReactNode
   onOpenDetails: () => void
   onOpenChanges: () => void
-}
-
-const TOOL_LABELS: Record<string, string> = {
-  web_search: '搜索网页', web_fetch: '读取网页', file_list: '浏览文件', file_read: '读取文件', file_search: '搜索工作区', attachment_open: '打开附件', output_register: '登记产物',
-  file_write: '写入文件', file_draft_start: '开始长文草稿', file_draft_append: '续写长文草稿', file_draft_commit: '提交长文草稿', file_replace: '修改文件', file_delete: '移入废纸篓', shell_run: '运行命令', process_start: '启动后台进程', process_poll: '读取后台进程', process_stop: '停止后台进程', document_render: '导出 PDF', task_plan: '整理计划',
-  task_step_update: '更新步骤', task_complete: '完成检查', skill_read: '读取技能', memory_propose: '提出记忆', agent_delegate: '并行处理',
-  chrome_tabs: '查看授权标签', chrome_snapshot: '读取网页', chrome_screenshot: '网页截图', chrome_navigate: '打开网页', chrome_click: '点击网页', chrome_type: '网页输入',
-  mcp_list_tools: '发现连接能力', mcp_call_tool: '使用连接',
-}
-
-const GROUP_META: Record<ActivityGroup['kind'], { label: string; icon: 'file' | 'terminal' | 'globe' | 'plug' | 'tasks' | 'activity' }> = {
-  files: { label: '文件', icon: 'file' },
-  shell: { label: '命令', icon: 'terminal' },
-  web: { label: '网页', icon: 'globe' },
-  mcp: { label: '连接', icon: 'plug' },
-  plan: { label: '计划', icon: 'tasks' },
-  other: { label: '其他', icon: 'activity' },
 }
 
 function formatTime(value?: unknown): string {
@@ -68,71 +52,6 @@ function Markdown({ children }: { children: string }) {
   )
 }
 
-function toolName(tool: ToolActivityItem): string {
-  return tool.title ?? TOOL_LABELS[tool.toolName] ?? tool.toolName.replaceAll('_', ' ')
-}
-
-function diagnosticText(value: unknown): string {
-  if (value === undefined) return ''
-  try {
-    return typeof value === 'string' ? value : JSON.stringify(value, null, 2)
-  } catch {
-    return ''
-  }
-}
-
-function activityHeadline(groups: ActivityGroup[]): string {
-  const count = groups.reduce((sum, group) => sum + group.count, 0)
-  const running = groups.some((group) => group.state === 'running')
-  const failed = groups.reduce((sum, group) => sum
-    + group.toolCalls.filter((tool) => (tool.status === 'failed' || tool.status === 'cancelled') && !isSourceWarning(tool)).length
-    + group.steps.filter((step) => step.status === 'failed').length, 0)
-  const warnings = groups.reduce((sum, group) => sum + group.toolCalls.filter(isSourceWarning).length, 0)
-  if (running) return `正在处理 · ${count} 项活动`
-  if (failed) return `已处理 ${count} 项 · ${failed} 项未完成`
-  if (warnings) return `已处理 ${count} 项 · ${warnings} 个来源不可用`
-  const names = groups.slice(0, 3).map((group) => `${GROUP_META[group.kind].label} ${group.count}`)
-  return `已处理 ${names.join(' · ')}`
-}
-
-function ActivityDisclosure({ groups }: { groups: ActivityGroup[] }) {
-  if (!groups.length) return null
-  return (
-    <details className="turn-activity">
-      <summary>
-        <span className="activity-symbol"><Icon name="activity" size={16} /></span>
-        <strong>{activityHeadline(groups)}</strong>
-        <Icon name="chevronDown" size={14} />
-      </summary>
-      <div className="turn-activity-content">
-        {groups.map((group) => (
-          <section key={group.kind} className={`activity-group activity-${group.state}`}>
-            <header><Icon name={GROUP_META[group.kind].icon} size={15} /><strong>{GROUP_META[group.kind].label}</strong><span>{group.count}</span></header>
-            {group.toolCalls.map((tool) => {
-              const diagnostic = diagnosticText(tool.argumentsSummary ?? tool.arguments)
-              return (
-                <div key={tool.id} className={`activity-row tool-status-${tool.status}`}>
-                  <span className="tool-status-dot" />
-                  <span><strong>{toolName(tool)}</strong><small>{tool.error ?? tool.summary ?? (tool.status === 'succeeded' ? '已完成' : tool.status === 'failed' ? '没有完成' : '正在处理')}</small></span>
-                  <time>{formatTime(tool.updatedAt ?? tool.createdAt)}</time>
-                  {diagnostic && <details className="diagnostic-details"><summary>技术详情</summary><pre>{diagnostic}</pre></details>}
-                </div>
-              )
-            })}
-            {group.steps.map((step) => (
-              <div key={step.id} className={`activity-row step-${step.status}`}>
-                <span className="tool-status-dot" />
-                <span><strong>{step.title}</strong>{step.detail && <small>{step.detail}</small>}</span>
-                <time>{formatTime(step.updatedAt ?? step.createdAt)}</time>
-              </div>
-            ))}
-          </section>
-        ))}
-      </div>
-    </details>
-  )
-}
-
 function ResultSummary({ result, onOpenDetails, onOpenChanges }: { result: ResultEvidence; onOpenDetails: () => void; onOpenChanges: () => void }) {
   const changes = result.changes?.length ?? 0
   const outputs = result.outputs?.filter((item) => item.kind !== 'diff').length ?? 0
@@ -160,7 +79,7 @@ function safeFailureMessage(detail: RunDetailView): string {
     ? String((detail.lastError as JsonRecord).message ?? '')
     : ''
   if (!raw || /constraint|sqlite|stack|tool_calls|\bid\b/i.test(raw)) {
-    return '这次操作没有完成。你可以重试，或展开活动查看诊断信息。'
+    return '这次操作没有完成。你可以重试，或打开右侧诊断查看技术信息。'
   }
   return raw.length > 180 ? `${raw.slice(0, 179)}…` : raw
 }
@@ -183,8 +102,11 @@ function visiblePhase(detail: RunDetailView): string {
 export function WorkTimeline({ detail, approvals, onOpenDetails, onOpenChanges }: WorkTimelineProps) {
   const tailRef = useRef<HTMLDivElement>(null)
   const followTailRef = useRef(true)
+  const [openProcessTurnId, setOpenProcessTurnId] = useState<string>()
   const turns = useMemo(() => buildWorkTurns(detail), [detail])
   const active = ['understanding', 'planning', 'running', 'verifying'].includes(detail.status)
+  const selectedProcess = turns.find((turn) => turn.id === openProcessTurnId)?.process
+  const hasVisibleProcess = turns.some((turn) => Boolean(turn.process))
 
   useEffect(() => {
     const scroller = tailRef.current?.closest('.run-scroll')
@@ -216,8 +138,8 @@ export function WorkTimeline({ detail, approvals, onOpenDetails, onOpenChanges }
               <div className="message-content">
                 <div className="message-meta"><strong>OpenWorkbuddy</strong><span>{formatTime(turn.response.updatedAt ?? turn.updatedAt)}</span></div>
                 <div className="agent-turn-entries">
+                  {turn.process && <ProcessTrigger timeline={turn.process} onOpen={() => setOpenProcessTurnId(turn.id)} />}
                   {turn.response.content && <div className="agent-turn-text"><Markdown>{turn.response.content}</Markdown></div>}
-                  <ActivityDisclosure groups={turn.activity} />
                   {turn.result && <ResultSummary result={turn.result} onOpenDetails={onOpenDetails} onOpenChanges={onOpenChanges} />}
                 </div>
               </div>
@@ -226,9 +148,10 @@ export function WorkTimeline({ detail, approvals, onOpenDetails, onOpenChanges }
           </section>
         )
       })}
-      {active && <div className="agent-working" role="status" aria-live="polite"><Icon name="activity" size={14} /><span>{visiblePhase(detail)}</span></div>}
+      {active && !hasVisibleProcess && <div className="agent-working" role="status" aria-live="polite"><Icon name="activity" size={14} /><span>{visiblePhase(detail)}</span></div>}
       {detail.status === 'failed' && <div className="inline-notice error"><Icon name="warning" /><span>{safeFailureMessage(detail)}</span></div>}
       <div ref={tailRef} className="timeline-tail" aria-hidden="true" />
+      <ProcessSheet open={Boolean(selectedProcess)} timeline={selectedProcess} onClose={() => setOpenProcessTurnId(undefined)} />
     </div>
   )
 }
