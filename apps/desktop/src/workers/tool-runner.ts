@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { readFile, readdir, stat } from 'node:fs/promises'
 import { join, relative } from 'node:path'
@@ -29,12 +29,28 @@ const parent = process.parentPort
 if (!parent && process.env.NODE_ENV !== 'test') throw new Error('Tool Runner 必须由 Electron utilityProcess 启动')
 
 const processes = new Map<string, ChildProcess>()
+interface ManagedProcessEntry {
+  id: string
+  runId: string
+  child: ChildProcess
+  output: Buffer
+  status: 'running' | 'succeeded' | 'failed' | 'stopped'
+  exitCode?: number
+  signal?: NodeJS.Signals | null
+  error?: string
+  startedAt: string
+  finishedAt?: string
+  timer: NodeJS.Timeout
+}
+const managedProcesses = new Map<string, ManagedProcessEntry>()
 type McpClientEntry = { client: Client; transport: StdioClientTransport | StreamableHTTPClientTransport; fingerprint: string }
 type CachedMcpConnection = McpClientEntry & { close(): Promise<void> }
 const mcpConnections = new FingerprintedConnectionCache<CachedMcpConnection>()
 const MAX_TEXT = 2 * 1024 * 1024
 const MAX_PROCESS_OUTPUT_BYTES = 128 * 1024
 const MAX_BINARY_BYTES = 50 * 1024 * 1024
+const MAX_MANAGED_PROCESS_OUTPUT_BYTES = 25 * 1024 * 1024
+const MAX_MANAGED_PROCESS_POLL_BYTES = 128 * 1024
 const SEARCH_EXCLUDED_DIRECTORIES = new Set(['.git', 'node_modules', 'dist', 'build', 'out', 'outputs', 'target'])
 
 export async function searchFilesFallback(root: string, query: string, limit = 500): Promise<Record<string, unknown>> {
@@ -247,6 +263,12 @@ async function execute(command: Extract<Command, { type: 'execute' }>): Promise<
       const cwd = (await resolveAuthorizedPath(authorizationRoot, args.cwd ?? '.', false, workspacePath)).target
       return runProcess(command.requestId, '/bin/zsh', ['-lc', String(args.command)], cwd, Math.min(Number(args.timeoutMs ?? 120_000), 600_000))
     }
+    case 'process.start': {
+      const cwd = (await resolveAuthorizedPath(authorizationRoot, args.cwd ?? '.', false, workspacePath)).target
+      return startManagedProcess(command.runId, String(args.command), cwd, Math.min(Number(args.timeoutMs ?? 30 * 60_000), 30 * 60_000))
+    }
+    case 'process.poll': return pollManagedProcess(command.runId, String(args.processId), Number(args.cursor ?? 0))
+    case 'process.stop': return stopManagedProcess(command.runId, String(args.processId))
     case 'web.search': return safeWebSearch(String(args.query), Number(args.maxResults ?? 8))
     case 'web.fetch': return safeFetch(String(args.url))
     case 'mcp.list_tools': {
@@ -265,6 +287,85 @@ async function execute(command: Extract<Command, { type: 'execute' }>): Promise<
     }
     default: throw Object.assign(new Error(`未知 Runner 工具：${toolId}`), { code: 'UNKNOWN_TOOL' })
   }
+}
+
+function appendManagedOutput(entry: ManagedProcessEntry, channel: 'stdout' | 'stderr', chunk: Buffer): void {
+  if (entry.status !== 'running') return
+  const tagged = Buffer.concat([Buffer.from(`\n[${channel}]\n`), chunk])
+  if (entry.output.byteLength + tagged.byteLength > MAX_MANAGED_PROCESS_OUTPUT_BYTES) {
+    entry.error = '后台进程输出超过 25 MB 上限'
+    entry.status = 'failed'
+    try { if (entry.child.pid) process.kill(-entry.child.pid, 'SIGTERM') } catch { /* already exited */ }
+    return
+  }
+  entry.output = Buffer.concat([entry.output, tagged])
+}
+
+export function startManagedProcess(runId: string, command: string, cwd: string, timeoutMs: number): Record<string, unknown> {
+  const active = [...managedProcesses.values()].filter((entry) => entry.runId === runId && entry.status === 'running')
+  if (active.length >= 3) throw Object.assign(new Error('当前任务最多同时运行 3 个后台进程'), { code: 'PROCESS_CONCURRENCY_LIMIT' })
+  for (const [id, entry] of managedProcesses) {
+    if (entry.status !== 'running' && entry.finishedAt && Date.now() - Date.parse(entry.finishedAt) > 10 * 60_000) managedProcesses.delete(id)
+  }
+  const processId = randomUUID()
+  const child = spawn('/bin/zsh', ['-lc', command], { cwd, env: sanitizeEnv(), detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
+  const entry: ManagedProcessEntry = {
+    id: processId, runId, child, output: Buffer.alloc(0), status: 'running', startedAt: new Date().toISOString(),
+    timer: setTimeout(() => {
+      if (entry.status !== 'running') return
+      entry.error = `后台进程超时（${timeoutMs} ms）`
+      entry.status = 'failed'
+      try { if (child.pid) process.kill(-child.pid, 'SIGTERM') } catch { /* already exited */ }
+    }, timeoutMs),
+  }
+  managedProcesses.set(processId, entry)
+  child.stdout?.on('data', (chunk: Buffer) => appendManagedOutput(entry, 'stdout', chunk))
+  child.stderr?.on('data', (chunk: Buffer) => appendManagedOutput(entry, 'stderr', chunk))
+  child.on('error', (error) => {
+    clearTimeout(entry.timer); entry.status = 'failed'; entry.error = error.message; entry.finishedAt = new Date().toISOString()
+  })
+  child.on('close', (code, signal) => {
+    clearTimeout(entry.timer)
+    if (code !== null) entry.exitCode = code
+    entry.signal = signal
+    if (entry.status === 'running') entry.status = code === 0 ? 'succeeded' : 'failed'
+    if (entry.status === 'failed' && !entry.error && code !== 0) entry.error = `进程退出码 ${code}${signal ? ` (${signal})` : ''}`
+    entry.finishedAt = new Date().toISOString()
+  })
+  return { processId, pid: child.pid, status: entry.status, startedAt: entry.startedAt, timeoutMs, cwd }
+}
+
+function managedProcess(runId: string, processId: string): ManagedProcessEntry {
+  const entry = managedProcesses.get(processId)
+  if (!entry || entry.runId !== runId) throw Object.assign(new Error('后台进程不存在或不属于当前任务'), { code: 'PROCESS_NOT_FOUND' })
+  return entry
+}
+
+export function pollManagedProcess(runId: string, processId: string, cursorInput: number): Record<string, unknown> {
+  const entry = managedProcess(runId, processId)
+  const cursor = Number.isSafeInteger(cursorInput) ? Math.max(0, Math.min(cursorInput, entry.output.byteLength)) : 0
+  const end = Math.min(entry.output.byteLength, cursor + MAX_MANAGED_PROCESS_POLL_BYTES)
+  const output = entry.output.subarray(cursor, end).toString('utf8')
+  const terminal = entry.status !== 'running'
+  return {
+    processId, status: entry.status, output, cursor, nextCursor: end, totalBytes: entry.output.byteLength,
+    hasMore: end < entry.output.byteLength,
+    ...(entry.exitCode !== undefined ? { exitCode: entry.exitCode } : {}),
+    ...(entry.signal ? { signal: entry.signal } : {}),
+    ...(entry.error ? { error: entry.error } : {}),
+    ...(entry.finishedAt ? { finishedAt: entry.finishedAt } : {}),
+    ...(terminal ? { fullOutput: entry.output.toString('utf8') } : {}),
+  }
+}
+
+export function stopManagedProcess(runId: string, processId: string): Record<string, unknown> {
+  const entry = managedProcess(runId, processId)
+  if (entry.status !== 'running') return { processId, status: entry.status, alreadyStopped: true }
+  entry.status = 'stopped'
+  entry.finishedAt = new Date().toISOString()
+  clearTimeout(entry.timer)
+  try { if (entry.child.pid) process.kill(-entry.child.pid, 'SIGTERM') } catch { /* already exited */ }
+  return { processId, status: 'stopped', stoppedAt: entry.finishedAt }
 }
 
 function runProcess(requestId: string, executable: string, args: string[], cwd: string, timeoutMs: number): Promise<any> {
@@ -317,6 +418,12 @@ parent?.on('message', async (event: { data: unknown }) => {
     }
     return
   }
+  if (command.type === 'cancel-run') {
+    for (const entry of managedProcesses.values()) {
+      if (entry.runId === command.runId && entry.status === 'running') stopManagedProcess(command.runId, entry.id)
+    }
+    return
+  }
   try {
     const result = await execute(command)
     send({ type: 'result', requestId: command.requestId, ok: true, result } satisfies ResultMessage)
@@ -325,4 +432,10 @@ parent?.on('message', async (event: { data: unknown }) => {
   }
 })
 
-process.on('exit', () => { void mcpConnections.closeAll() })
+process.on('exit', () => {
+  for (const entry of managedProcesses.values()) {
+    clearTimeout(entry.timer)
+    try { if (entry.child.pid) process.kill(-entry.child.pid, 'SIGTERM') } catch { /* already exited */ }
+  }
+  void mcpConnections.closeAll()
+})

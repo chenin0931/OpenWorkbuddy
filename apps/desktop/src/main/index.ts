@@ -100,6 +100,7 @@ async function initialize(): Promise<void> {
   session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false))
   const database = new AppDatabase(join(userData, 'workbuddy.sqlite3'))
   database.interruptOpenTraces()
+  database.interruptManagedProcesses()
   const startupRecovery = database.recoverInterruptedWork()
   const storedSettings = database.getSetting<any>('appSettings', {})
   const retentionDays = Number(storedSettings.detailedLogRetentionDays)

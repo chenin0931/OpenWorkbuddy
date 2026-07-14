@@ -430,6 +430,25 @@ describe('AppDatabase persistence boundary', () => {
     database.close()
   })
 
+  it('persists managed processes, closes their trace spans and interrupts orphaned work', async () => {
+    const { database } = await temporaryDatabase()
+    const run = database.createRun({ title: 'Background process', prompt: 'Run a long command' })
+    const traceId = database.createRunTrace({ runId: run.id, rootSpanId: 'root-managed' })
+    database.createTraceSpan({ id: 'root-managed', traceId, kind: 'run_turn', name: 'Turn' })
+
+    const first = database.createManagedProcess({ id: 'process-1', runId: run.id, commandSummary: 'build docs', cwd: '/tmp', pid: 123 })
+    expect(first).toMatchObject({ id: 'process-1', runId: run.id, status: 'running', traceSpanId: expect.any(String) })
+    database.updateManagedProcess('process-1', { status: 'succeeded', exitCode: 0 })
+    expect(database.getManagedProcess('process-1')).toMatchObject({ status: 'succeeded', exit_code: 0, finishedAt: expect.any(String) })
+    expect(database.listTraceSpans(run.id).find((span) => span.id === first.traceSpanId)).toMatchObject({ status: 'succeeded' })
+
+    const second = database.createManagedProcess({ id: 'process-2', runId: run.id, commandSummary: 'serve preview', cwd: '/tmp' })
+    expect(database.interruptManagedProcesses(run.id)).toBe(1)
+    expect(database.getManagedProcess(second.id)).toMatchObject({ status: 'interrupted', finishedAt: expect.any(String) })
+    expect(database.listTraceSpans(run.id).find((span) => span.id === second.traceSpanId)).toMatchObject({ status: 'interrupted' })
+    database.close()
+  })
+
   it('chains new audit events with deterministic hashes while leaving legacy rows readable', async () => {
     const { database } = await temporaryDatabase()
     database.db.prepare("INSERT INTO audit_events(category,action,summary,payload_json,created_at) VALUES('legacy','old','old','{}',?)").run(new Date().toISOString())

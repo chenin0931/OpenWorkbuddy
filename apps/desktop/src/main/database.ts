@@ -293,6 +293,21 @@ export class AppDatabase {
         artifact_ids_json TEXT NOT NULL DEFAULT '[]'
       );
       CREATE INDEX IF NOT EXISTS trace_spans_trace_idx ON trace_spans(trace_id, started_at);
+      CREATE TABLE IF NOT EXISTS managed_processes (
+        id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+        command_summary TEXT NOT NULL,
+        cwd TEXT NOT NULL,
+        pid INTEGER,
+        status TEXT NOT NULL,
+        exit_code INTEGER,
+        output_artifact_id TEXT REFERENCES artifacts(id) ON DELETE SET NULL,
+        trace_span_id TEXT,
+        started_at TEXT NOT NULL,
+        finished_at TEXT,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS managed_processes_run_idx ON managed_processes(run_id, started_at DESC);
     `)
 
     this.migrateModelProfileProviderConstraint()
@@ -1043,6 +1058,40 @@ export class AppDatabase {
       attributes: parse(row.attributes_json, {}), artifactIds: parse(row.artifact_ids_json, []),
     }))
     return { traces, spans }
+  }
+
+  createManagedProcess(input: { id: string; runId: string; commandSummary: string; cwd: string; pid?: number }): any {
+    const timestamp = now()
+    const trace = this.db.prepare("SELECT id,root_span_id FROM run_traces WHERE run_id=? AND status='running' ORDER BY started_at DESC LIMIT 1").get(input.runId) as any
+    let traceSpanId: string | undefined
+    if (trace) traceSpanId = this.createTraceSpan({ traceId: trace.id, parentSpanId: trace.root_span_id, kind: 'managed_process', name: input.commandSummary, attributes: { processId: input.id, cwd: input.cwd } })
+    this.db.prepare(`INSERT INTO managed_processes(id,run_id,command_summary,cwd,pid,status,trace_span_id,started_at,updated_at)
+      VALUES(?,?,?,?,?,'running',?,?,?)`).run(input.id, input.runId, input.commandSummary, input.cwd, input.pid ?? null, traceSpanId ?? null, timestamp, timestamp)
+    return this.getManagedProcess(input.id)
+  }
+
+  getManagedProcess(id: string): any | undefined {
+    const row = this.db.prepare('SELECT * FROM managed_processes WHERE id=?').get(id) as any
+    return row ? { ...row, runId: row.run_id, commandSummary: row.command_summary, outputArtifactId: row.output_artifact_id, traceSpanId: row.trace_span_id, startedAt: row.started_at, finishedAt: row.finished_at, updatedAt: row.updated_at } : undefined
+  }
+
+  updateManagedProcess(id: string, input: { status: string; exitCode?: number; outputArtifactId?: string; finishedAt?: string }): any | undefined {
+    const current = this.getManagedProcess(id)
+    if (!current) return undefined
+    const terminal = ['succeeded', 'failed', 'stopped', 'interrupted'].includes(input.status)
+    const finishedAt = input.finishedAt ?? (terminal ? now() : current.finishedAt)
+    this.db.prepare(`UPDATE managed_processes SET status=?,exit_code=?,output_artifact_id=COALESCE(?,output_artifact_id),finished_at=?,updated_at=? WHERE id=?`)
+      .run(input.status, input.exitCode ?? null, input.outputArtifactId ?? null, finishedAt ?? null, now(), id)
+    if (terminal && current.traceSpanId) this.finishTraceSpan(current.traceSpanId, input.status === 'succeeded' ? 'succeeded' : input.status === 'stopped' ? 'cancelled' : input.status === 'interrupted' ? 'interrupted' : 'failed', { ...(input.outputArtifactId ? { artifactIds: [input.outputArtifactId] } : {}) })
+    return this.getManagedProcess(id)
+  }
+
+  interruptManagedProcesses(runId?: string): number {
+    const rows = (runId
+      ? this.db.prepare("SELECT id FROM managed_processes WHERE run_id=? AND status='running'").all(runId)
+      : this.db.prepare("SELECT id FROM managed_processes WHERE status='running'").all()) as Array<{ id: string }>
+    for (const row of rows) this.updateManagedProcess(row.id, { status: 'interrupted' })
+    return rows.length
   }
 
   listRecentToolReceipts(runId: string, limit = 40): any[] {

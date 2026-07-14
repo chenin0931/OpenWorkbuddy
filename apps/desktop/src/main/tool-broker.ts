@@ -8,7 +8,7 @@ import type { AppDatabase } from './database'
 import type { ArtifactStore } from './artifact-store'
 import type { ChromeBridge } from './chrome-bridge'
 import type { SecretStore } from './secret-store'
-import { TOOL_DEFINITIONS, type ToolDefinition } from './tool-registry'
+import { effectiveRisk, TOOL_DEFINITIONS, type ToolDefinition } from './tool-registry'
 import { assertToolArguments } from './tool-argument-validator'
 import type { ToolRunnerBridge } from './worker-bridge'
 import type { DocumentRenderService } from './document-render-service'
@@ -20,13 +20,14 @@ interface PendingApproval {
   args: Record<string, unknown>
   resolve: (args: Record<string, unknown>) => void
   reject: (error: Error) => void
+  onceOnly: boolean
 }
 
 const sourceFor = (id: string): ToolDescriptor['source'] => id.startsWith('chrome_') ? 'chrome' : id.startsWith('mcp_') ? 'mcp' : 'builtin'
 const policyName = (id: string): string => ({
   file_list: 'file.list', file_read: 'file.read', file_search: 'file.search', attachment_open: 'attachment.open', output_register: 'output.register', file_write: 'file.write', file_draft_start: 'file.stage', file_draft_append: 'file.stage', file_draft_commit: 'file.write', file_replace: 'file.edit', file_delete: 'file.delete',
   document_render: 'document.render',
-  shell_run: 'shell.command', web_search: 'web.search', web_fetch: 'web.fetch', mcp_list_tools: 'mcp.list', mcp_call_tool: 'mcp.call', skill_read: 'skill.read', memory_propose: 'memory.propose',
+  shell_run: 'shell.command', process_start: 'shell.process', process_poll: 'process.poll', process_stop: 'process.stop', web_search: 'web.search', web_fetch: 'web.fetch', mcp_list_tools: 'mcp.list', mcp_call_tool: 'mcp.call', skill_read: 'skill.read', memory_propose: 'memory.propose',
   task_plan: 'task.plan', task_complete: 'task.complete', agent_delegate: 'agent.delegate', chrome_tabs: 'chrome.read', chrome_snapshot: 'chrome.read_dom',
   chrome_screenshot: 'chrome.screenshot', chrome_navigate: 'chrome.navigate', chrome_click: 'chrome.click', chrome_type: 'chrome.input_sensitive', chrome_open_tab: 'chrome.navigate',
 }[id] ?? id)
@@ -117,6 +118,8 @@ const SENSITIVE_OUTPUT_FILE = /^(?:\.env(?:\..+)?|.*(?:secret|credential|token|a
 const MAX_OUTPUT_FILES = 100
 const MAX_OUTPUT_FILE_BYTES = 50 * 1024 * 1024
 const MAX_OUTPUT_TOTAL_BYTES = 250 * 1024 * 1024
+const HARD_PROTECTED_TARGET = /(?:Library\/Keychains|Library\/Application Support\/(?:Google\/Chrome|OpenWorkbuddy)\/(?:Cookies|Login Data|workbuddy\.sqlite3)|\.ssh\/(?:id_rsa|id_dsa|id_ecdsa|id_ed25519)(?:\s|$|["']))/i
+const SENSITIVE_TARGET = /(?:^|[\s/"'])(?:\.env(?:\.[^\s/"']+)?|\.npmrc|\.aws\/credentials|\.config\/gcloud|\.azure|\.kube\/config)(?:$|[\s/"'])/i
 
 function parseJson(value: unknown, fallback: JsonValue = {}): JsonValue {
   if (typeof value !== 'string') return fallback
@@ -146,8 +149,27 @@ function evaluateRunAccessPolicy(
   accessMode: 'approval' | 'full_disk',
 ): ReturnType<typeof evaluateToolPolicy> {
   const decision = evaluateToolPolicy({ call, descriptor })
+  const serialized = JSON.stringify(call.arguments)
+  if (HARD_PROTECTED_TARGET.test(serialized)) return { ...decision, effect: 'deny', reason: '应用密钥库、浏览器凭据和 SSH 私钥属于不可委派边界。', ruleId: 'security.protected-credential-store', sendsDataOffDevice: false }
+  // Skill packages and final-output registration have stricter, purpose-built
+  // secret filters. Let those tools reject with their stable diagnostic codes
+  // instead of turning a guaranteed denial into a dangling approval wait.
+  if (SENSITIVE_TARGET.test(serialized) && descriptor.name !== 'skill.read' && descriptor.name !== 'output.register') {
+    return { ...decision, effect: 'require_approval', reason: '操作涉及环境变量或凭据配置，必须逐次确认。', ruleId: 'security.sensitive-file-once' }
+  }
   if (accessMode !== 'full_disk' || decision.effect !== 'require_approval') return decision
-  return { ...decision, effect: 'allow', ruleId: `${decision.ruleId}.run-full-disk` }
+  const ordinaryLocalShell = (descriptor.name === 'shell.command' || descriptor.name === 'shell.process') && decision.riskLevel === 'external_side_effect'
+  const publicWebRead = (descriptor.name === 'web.search' || descriptor.name === 'web.fetch') && (() => {
+    if (descriptor.name !== 'web.fetch') return true
+    try {
+      const url = new URL(String((call.arguments as Record<string, unknown>).url ?? ''))
+      return !url.username && !url.password && (url.protocol === 'http:' || url.protocol === 'https:')
+    } catch { return false }
+  })()
+  if (decision.riskLevel === 'readonly' || decision.riskLevel === 'reversible_write' || ordinaryLocalShell || publicWebRead) {
+    return { ...decision, effect: 'allow', ruleId: `${decision.ruleId}.run-full-disk-auto` }
+  }
+  return decision
 }
 
 export class ToolBroker {
@@ -179,11 +201,12 @@ export class ToolBroker {
   }
 
   async handle(input: { runId: string; requestId: string; toolCallId: string; toolId: string; args: Record<string, unknown> }): Promise<unknown> {
-    const tool = TOOL_DEFINITIONS.find((candidate) => candidate.id === input.toolId)
-    if (!tool) throw new Error(`未知工具：${input.toolId}`)
+    const definition = TOOL_DEFINITIONS.find((candidate) => candidate.id === input.toolId)
+    if (!definition) throw new Error(`未知工具：${input.toolId}`)
     // Arguments cross a trust boundary from the model worker. Validate before
     // policy classification, persistence or any execution side effect.
-    assertToolArguments(tool.id, tool.parameters, input.args)
+    assertToolArguments(definition.id, definition.parameters, input.args)
+    const tool: ToolDefinition = { ...definition, risk: effectiveRisk(definition, input.args) }
     let rawRun = this.database.getRun(input.runId)
     if (!rawRun) throw new Error('任务不存在')
     if (rawRun.status === 'verifying' && input.toolId !== 'task_complete') {
@@ -203,9 +226,10 @@ export class ToolBroker {
       updatedAt: new Date().toISOString(),
     }
     // The composer owns this run's durable authority. Ask mode uses the
-    // conservative base policy. Full-disk mode auto-executes every operation
-    // that the deterministic policy did not hard-deny; TCC, read-only child
-    // authority and product-level macOS app-control denials still win.
+    // conservative base policy. Full-disk mode widens the filesystem root and
+    // auto-executes ordinary local work plus public reads. Destructive,
+    // publishing, uploading and other high-risk external effects still need a
+    // one-shot approval; TCC and product-level app-control denials also win.
     const accessMode = rawRun.accessMode === 'full_disk' ? 'full_disk' : 'approval'
     const baseDecision = evaluateRunAccessPolicy(call, descriptor, accessMode)
     const memoryDisabled = tool.id === 'memory_propose' && this.database.getSetting<any>('appSettings', {}).memoryEnabled === false
@@ -240,7 +264,8 @@ export class ToolBroker {
     this.database.audit('tool', input.toolId, `Agent 请求 ${tool.label}`, { actor: 'agent', outcome: decision.effect, riskLevel: decision.riskLevel, target: redactValue(rawTarget, 'target') as string }, input.runId)
 
     let args = input.args
-    const hasGrant = this.database.hasRunGrant(input.runId, descriptor.name, asJson(input.args))
+    const onceOnly = decision.riskLevel === 'external_side_effect' || decision.riskLevel === 'high_risk_irreversible' || decision.ruleId === 'security.sensitive-file-once'
+    const hasGrant = !onceOnly && this.database.hasRunGrant(input.runId, descriptor.name, asJson(input.args))
     if (decision.effect === 'deny') {
       const error = Object.assign(new Error(decision.reason), { code: decision.ruleId })
       this.database.updateToolCall(receiptId, 'failed', undefined, error.message)
@@ -346,13 +371,15 @@ export class ToolBroker {
     this.database.updateToolCall(receiptId, 'waiting_approval')
     this.database.transitionRun(runId, 'waiting_approval', { outcome: null, finishedAt: null })
     this.emit({ id: randomUUID(), runId, sequence: Date.now(), at: new Date().toISOString(), kind: 'approval.requested', approval })
-    return new Promise((resolve, reject) => this.pendingApprovals.set(id, { approval, receiptId, tool, args, resolve, reject }))
+    const onceOnly = decision.riskLevel === 'external_side_effect' || decision.riskLevel === 'high_risk_irreversible' || decision.ruleId === 'security.sensitive-file-once'
+    return new Promise((resolve, reject) => this.pendingApprovals.set(id, { approval, receiptId, tool, args, resolve, reject, onceOnly }))
   }
 
   respondToApproval(response: ApprovalResponse): void {
     const pending = this.pendingApprovals.get(response.requestId)
     if (!pending) throw new Error('审批不存在或已失效')
-    const resolution = resolveApproval(pending.approval, response, { grantId: randomUUID() })
+    const effectiveResponse = pending.onceOnly && response.scope === 'run_tool' ? { ...response, scope: 'once' as const } : response
+    const resolution = resolveApproval(pending.approval, effectiveResponse, { grantId: randomUUID() })
     if (resolution.executionArguments !== undefined) {
       // An edited approval is a second untrusted argument source. Keep the
       // approval pending if validation fails so the user can correct it.
@@ -377,7 +404,7 @@ export class ToolBroker {
       }
     }
     this.pendingApprovals.delete(response.requestId)
-    this.database.resolveApproval(response.requestId, response)
+    this.database.resolveApproval(response.requestId, effectiveResponse)
     if (resolution.request.status === 'rejected' || !resolution.executionArguments) {
       this.database.audit('approval', pending.tool.id, `用户拒绝 ${pending.tool.label}`, { actor: 'user', outcome: 'rejected', riskLevel: pending.approval.riskLevel }, pending.approval.runId)
       this.database.updateToolCall(pending.receiptId, 'failed', undefined, '用户拒绝了该操作')
@@ -497,6 +524,42 @@ export class ToolBroker {
       })
       const outputs = await this.registerOutputs(runId, workspace.root_path, authorizedRoot, [{ path: rendered.outputPath, label: basename(rendered.outputPath) }])
       return { ...rendered, outputs: outputs.outputs }
+    }
+    if (tool.id === 'process_start') {
+      const result = await this.runner.execute({ runId, requestId, toolId: 'process.start', args, workspacePath: workspace.root_path, authorizedRoot })
+      const processId = String(result.processId ?? '')
+      if (!processId) throw Object.assign(new Error('后台进程未返回进程 ID'), { code: 'PROCESS_START_FAILED' })
+      const summary = String(redactValue(String(args.command ?? '').replace(/\s+/g, ' ').trim())).slice(0, 240)
+      this.database.createManagedProcess({ id: processId, runId, commandSummary: summary || 'background process', cwd: String(result.cwd ?? args.cwd ?? workspace.root_path), ...(Number.isInteger(result.pid) ? { pid: result.pid } : {}) })
+      return result
+    }
+    if (tool.id === 'process_poll') {
+      const processId = String(args.processId)
+      const persisted = this.database.getManagedProcess(processId)
+      if (!persisted || persisted.runId !== runId) throw Object.assign(new Error('后台进程不存在或不属于当前任务'), { code: 'PROCESS_NOT_FOUND' })
+      const result = await this.runner.execute({ runId, requestId, toolId: 'process.poll', args, workspacePath: workspace.root_path, authorizedRoot })
+      const status = String(result.status ?? 'running')
+      let outputArtifact: any
+      if (status !== 'running' && typeof result.fullOutput === 'string' && !persisted.outputArtifactId) {
+        outputArtifact = await this.artifacts.putText({ runId, name: `process-${processId}.log`, kind: 'tool_result', content: result.fullOutput, mime: 'text/plain', metadata: { processId, status, commandSummary: persisted.commandSummary } })
+      }
+      this.database.updateManagedProcess(processId, {
+        status,
+        ...(Number.isInteger(result.exitCode) ? { exitCode: result.exitCode } : {}),
+        ...(outputArtifact ? { outputArtifactId: outputArtifact.id } : {}),
+        ...(typeof result.finishedAt === 'string' ? { finishedAt: result.finishedAt } : {}),
+      })
+      const safe = { ...result }
+      delete safe.fullOutput
+      return { ...safe, ...(outputArtifact ? { outputArtifact: this.publicArtifactRef(outputArtifact) } : persisted.outputArtifactId ? { outputArtifactId: persisted.outputArtifactId } : {}) }
+    }
+    if (tool.id === 'process_stop') {
+      const processId = String(args.processId)
+      const persisted = this.database.getManagedProcess(processId)
+      if (!persisted || persisted.runId !== runId) throw Object.assign(new Error('后台进程不存在或不属于当前任务'), { code: 'PROCESS_NOT_FOUND' })
+      const result = await this.runner.execute({ runId, requestId, toolId: 'process.stop', args, workspacePath: workspace.root_path, authorizedRoot })
+      this.database.updateManagedProcess(processId, { status: String(result.status ?? 'stopped'), ...(typeof result.stoppedAt === 'string' ? { finishedAt: result.stoppedAt } : {}) })
+      return result
     }
     if (tool.id === 'file_draft_commit') {
       const draftId = String(args.draftId)

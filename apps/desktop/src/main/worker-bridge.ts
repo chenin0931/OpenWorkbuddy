@@ -129,6 +129,7 @@ export class ToolRunnerBridge {
     for (const [requestId, pending] of this.pending) {
       if (pending.runId === runId) this.cancel(requestId)
     }
+    this.worker.send({ protocolVersion: WORKER_PROTOCOL_VERSION, type: 'cancel-run', runId })
   }
   stop(): void { this.worker.stop() }
 }

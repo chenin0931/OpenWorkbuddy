@@ -267,7 +267,9 @@ describe('ToolBroker file leases and artifacts', () => {
 describe('ToolBroker research budget', () => {
   it('reuses an identical successful search without another outbound request', async () => {
     const execute = vi.fn(async () => ({ engine: 'bing-html', query: 'GraphRAG', resultCount: 1, results: [{ title: 'Official', url: 'https://example.test' }] }))
-    const fixture = brokerFixture(new FakeDatabase(), execute)
+    const database = new FakeDatabase()
+    database.run.accessMode = 'full_disk'
+    const fixture = brokerFixture(database, execute)
 
     await fixture.broker.handle({ runId: 'run-1', requestId: 'search-1', toolCallId: 'search-1', toolId: 'web_search', args: { query: 'GraphRAG', maxResults: 8 } })
     const repeated = await fixture.broker.handle({ runId: 'run-1', requestId: 'search-2', toolCallId: 'search-2', toolId: 'web_search', args: { query: '  graphrag  ', maxResults: 8 } }) as any
@@ -411,7 +413,7 @@ describe('ToolBroker capability enforcement', () => {
     await expect(pending).rejects.toThrow('test cleanup')
   })
 
-  it('auto-executes all non-denied tools in full access while keeping the project cwd', async () => {
+  it('auto-executes ordinary full access work but keeps destructive and publishing actions one-shot', async () => {
     const database = new FakeDatabase()
     database.run.accessMode = 'full_disk'
     database.granted = false
@@ -430,10 +432,15 @@ describe('ToolBroker capability enforcement', () => {
     expect(runnerCalls.every((call) => call.authorizedRoot === '/' && call.workspacePath === '/workspace')).toBe(true)
     expect(database.approvals).toHaveLength(0)
 
-    await expect(fixture.broker.handle({
+    const deletePending = fixture.broker.handle({
       runId: 'run-1', requestId: 'delete-full', toolCallId: 'delete-full', toolId: 'file_delete',
       args: { path: '/tmp/outside.txt' },
-    })).resolves.toMatchObject({ path: '/tmp/outside.txt' })
+    })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    const deleteApproval = fixture.events.find((event) => event.kind === 'approval.requested')?.approval
+    expect(deleteApproval).toMatchObject({ riskLevel: 'high_risk_irreversible' })
+    fixture.broker.respondToApproval({ requestId: deleteApproval.id, decision: 'reject', scope: 'once' })
+    await expect(deletePending).rejects.toThrow('用户拒绝了该操作')
 
     await expect(fixture.broker.handle({
       runId: 'run-1', requestId: 'shell-full', toolCallId: 'shell-full', toolId: 'shell_run',
@@ -445,15 +452,49 @@ describe('ToolBroker capability enforcement', () => {
       args: { command: 'curl https://example.com' },
     })).resolves.toMatchObject({ path: '/tmp/outside.txt' })
 
-    expect(database.approvals).toHaveLength(0)
-    expect(runnerCalls).toHaveLength(5)
+    expect(database.approvals).toHaveLength(1)
+    expect(database.approvals[0]).toMatchObject({ status: 'denied' })
+    expect(runnerCalls).toHaveLength(4)
     expect(runnerCalls.every((call) => call.authorizedRoot === '/' && call.workspacePath === '/workspace')).toBe(true)
+
+    const publishPending = fixture.broker.handle({
+      runId: 'run-1', requestId: 'publish-full', toolCallId: 'publish-full', toolId: 'shell_run',
+      args: { command: 'git push origin main' },
+    })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    const publishApproval = fixture.events.filter((event) => event.kind === 'approval.requested').at(-1)?.approval
+    expect(publishApproval).toMatchObject({ riskLevel: 'high_risk_irreversible' })
+    fixture.broker.respondToApproval({ requestId: publishApproval.id, decision: 'reject', scope: 'run_tool' })
+    await expect(publishPending).rejects.toThrow('用户拒绝了该操作')
+    expect(runnerCalls).toHaveLength(4)
 
     await expect(fixture.broker.handle({
       runId: 'run-1', requestId: 'macos-hard-deny', toolCallId: 'macos-hard-deny', toolId: 'shell_run',
       args: { command: 'osascript -e \'tell application "Finder" to activate\'' },
     })).rejects.toMatchObject({ code: 'shell.macos-app-automation-denied' })
-    expect(runnerCalls).toHaveLength(5)
+    expect(runnerCalls).toHaveLength(4)
+  })
+
+  it('denies protected credential stores and requires one-shot approval for sensitive files', async () => {
+    const database = new FakeDatabase()
+    database.run.accessMode = 'full_disk'
+    database.granted = true
+    const fixture = brokerFixture(database, async () => ({ content: 'TOKEN=redacted', sha256: 'x', mtimeMs: 1 }))
+
+    await expect(fixture.broker.handle({
+      runId: 'run-1', requestId: 'ssh-key', toolCallId: 'ssh-key', toolId: 'file_read',
+      args: { path: '/Users/chen/.ssh/id_ed25519' },
+    })).rejects.toMatchObject({ code: 'security.protected-credential-store' })
+
+    const pending = fixture.broker.handle({
+      runId: 'run-1', requestId: 'env-read', toolCallId: 'env-read', toolId: 'file_read',
+      args: { path: '/tmp/project/.env' },
+    })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    const approval = fixture.events.find((event) => event.kind === 'approval.requested')?.approval
+    expect(approval).toMatchObject({ reason: expect.stringContaining('凭据') })
+    fixture.broker.respondToApproval({ requestId: approval.id, decision: 'reject', scope: 'run_tool' })
+    await expect(pending).rejects.toThrow('用户拒绝了该操作')
   })
 
   it('fails closed instead of using the disk root when the run workspace disappeared', async () => {

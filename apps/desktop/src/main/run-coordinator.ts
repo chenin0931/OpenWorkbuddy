@@ -243,7 +243,7 @@ export class RunCoordinator {
         this.emitRun(runId)
       }
       const runtimeAuthority = accessModeChanged
-        ? `<runtime-authority source="OpenWorkbuddy" trusted="true">工作权限已切换为 ${raw.accessMode === 'full_disk' ? '完全访问；授权根为 /，相对路径仍以当前工作区为基准；所有未被策略硬拒绝的文件、Shell、网络、MCP 与浏览器操作自动执行，不再逐项确认' : '请求批准；授权根恢复为当前工作区；需要审批的操作必须等待用户处理'}。macOS TCC、只读子 Agent 与产品硬拒绝边界仍然有效。</runtime-authority>\n\n`
+        ? `<runtime-authority source="OpenWorkbuddy" trusted="true">工作权限已切换为 ${raw.accessMode === 'full_disk' ? '完全访问；授权根为 /，相对路径仍以当前工作区为基准；普通读取、公开网页 GET/搜索、可逆写入和常规本地命令自动执行；删除、发送、发布、支付、上传、表单提交、凭据访问和未知外部副作用仍需单次确认' : '请求批准；授权根恢复为当前工作区；需要审批的操作必须等待用户处理'}。macOS TCC、只读子 Agent 与产品硬拒绝边界仍然有效。</runtime-authority>\n\n`
         : ''
       this.host.steer(runId, `${runtimeAuthority}${content}`, images)
     }
@@ -256,6 +256,7 @@ export class RunCoordinator {
     if (TERMINAL_RUN_STATUSES.has(raw.status)) throw new Error('已结束的任务不能暂停')
     this.host.cancelRun(runId)
     this.runner.cancelRun(runId)
+    this.database.interruptManagedProcesses(runId)
     this.database.finishRunTurn(runId, 'cancelled')
     this.database.transitionRun(runId, 'paused', { outcome: null, finishedAt: null })
     this.database.cancelPendingRunWork(runId, '任务已暂停；未完成工具和审批已失效')
@@ -280,6 +281,7 @@ export class RunCoordinator {
     if (raw.status === 'cancelled') return this.getRun(runId)
     if (raw.status === 'completed' || raw.status === 'failed') throw new Error('已结束的任务不能取消')
     this.host.cancelRun(runId); this.runner.cancelRun(runId)
+    this.database.interruptManagedProcesses(runId)
     this.database.stopRunExecution(runId)
     this.database.transitionRun(runId, 'cancelled', { outcome: null, error: null, finishedAt: new Date().toISOString() })
     this.database.cancelPendingRunWork(runId, '任务已取消')
@@ -593,6 +595,7 @@ export class RunCoordinator {
       this.broker.rejectRunApprovals(runId, reason)
       this.host.cancelRun(runId)
       this.runner.cancelRun(runId)
+      this.database.interruptManagedProcesses(runId)
       this.streamingMessageIds.delete(runId)
       this.clearTransientEventState(runId)
       this.traces.finishRun(runId, 'interrupted', { reason: 'chrome_disconnected' })
@@ -609,6 +612,7 @@ export class RunCoordinator {
       this.streamingMessageIds.delete(runId)
       this.clearTransientEventState(runId)
       this.traces.interruptRun(runId, `${workerName}:${reason}`)
+      this.database.interruptManagedProcesses(runId)
       this.emitRun(runId)
     }
     if (recovery.pausedRuns) this.notify('任务已暂停', `${workerName} 意外退出；${recovery.pausedRuns} 个任务可在重启执行进程后继续。`)
